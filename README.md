@@ -4,7 +4,7 @@
 > 参赛项目：**Vultr Agent Rush Hackathon · Challenge 1「Blast Radius Zero」**（线上 2026-11-03 – 11-08）
 
 **当前状态（2026-10-31）：技术预研完成 + 可离线运行的骨架。**
-策略引擎、审计 trace、Agent 循环、Web/API、沙箱抽象与部署文件已实现；38 个离线单测全绿，离线演示 29 条审计事件哈希链校验通过。
+策略引擎、审计 trace、Agent 循环、Web/API、沙箱抽象与部署文件已实现；39 个离线单测全绿，离线演示 29 条审计事件哈希链校验通过。
 **未部署任何收费资源、未调用真实推理 API、未修改 YAI 主仓库。**
 
 ---
@@ -12,7 +12,7 @@
 ## 现在就能跑（不需要 key / 不需要 Docker / 不花钱）
 
 ```bash
-# 1) 38 个离线单测
+# 1) 39 个离线单测
 python -m unittest discover -s backend/tests -t backend -v
 
 # 2) 离线端到端演示：Mock 模型 + Fake 沙箱 + 真实策略 + 真实 trace
@@ -144,7 +144,7 @@ YAI Guard/
 │   │   ├── agent/               # 循环 / 工具 / Mock / Vultr 适配
 │   │   ├── main.py              # Web API（app VM）
 │   │   └── controller.py        # Sandbox Controller（sandbox VM）
-│   ├── tests/                   # 38 个 unittest
+│   ├── tests/                   # 39 个 unittest
 │   └── demo_offline.py
 ├── web/index.html               # 单页时间线 UI
 ├── deploy/                      # 双 VM compose + Caddy + 沙箱镜像
