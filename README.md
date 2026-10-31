@@ -84,6 +84,7 @@ cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 | 7 | [`docs/04-安全边界与策略设计.md`](docs/04-安全边界与策略设计.md) | L0–L5、加固参数、20 条拦截规则、3 个演示脚本 |
 | 8 | [`docs/07-部署与成本估算.md`](docs/07-部署与成本估算.md) | 双 VM SOP、防火墙、TLS、成本两档 |
 | 9 | [`docs/08-实现方案与骨架说明.md`](docs/08-实现方案与骨架说明.md) | 已实现的模块、运行方式、与设计的偏差、Day-1 清单 |
+| 10 | [`docs/09-派单与并行开发计划.md`](docs/09-派单与并行开发计划.md) | 8 张可派工单、依赖图、冲突矩阵、验收总表 |
 
 证据台账（每条事实附 URL + 访问日期 + 原文摘录）：
 [`research/00`](research/00-来源与证据.md) · [`research/02`](research/02-inference-证据.md) · [`research/03`](research/03-sandbox-证据.md) · [`research/07`](research/07-cost-证据.md)
@@ -134,8 +135,9 @@ D5   11-08           终审 · 复现测试 · **11-09 03:00 前提交**        
 YAI Guard/
 ├── README.md
 ├── LICENSE                      # MIT
-├── docs/                        # 00 预研总结 … 08 实现方案
+├── docs/                        # 00 预研总结 … 09 派单计划
 ├── research/                    # 事实台账（URL + 访问时间 + 原文）
+├── dispatch/                    # 8 张可直接派发的工单（WO-01 … WO-08）
 ├── backend/
 │   ├── app/
 │   │   ├── policy/              # 确定性策略引擎（零依赖）
