@@ -1,0 +1,33 @@
+# 控制面：只跑编排/展示，不挂 docker.sock、不持有执行权限。
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      ARTIFACT_DIR: /app/artifacts
+      SANDBOX_DRIVER: remote
+    volumes:
+      - ../artifacts:/app/artifacts
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:

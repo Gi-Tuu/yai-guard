@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YAI Guard · Secure Autonomous Execution</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#121821; --line:#243040; --text:#e6edf3; --dim:#8b98a5;
+          --ok:#3fb950; --deny:#f85149; --warn:#d29922; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  .tag { color:var(--dim); font-size:12px; }
+  main { max-width:1100px; margin:0 auto; padding:24px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  textarea { width:100%; min-height:72px; background:#0d131b; color:var(--text); border:1px solid var(--line);
+             border-radius:8px; padding:10px; font:inherit; resize:vertical; }
+  button { background:var(--accent); color:#04101f; border:0; border-radius:8px; padding:9px 16px; font:inherit;
+           font-weight:700; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); }
+  button.approve { background:var(--ok); }
+  button.reject { background:var(--deny); color:#fff; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  .chips span { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 10px; margin:2px; color:var(--dim); font-size:12px; }
+  .event { border-left:3px solid var(--line); padding:6px 12px; margin:4px 0; }
+  .event.deny { border-color:var(--deny); }
+  .event.approve { border-color:var(--warn); }
+  .event.exec { border-color:var(--accent); }
+  .event.done { border-color:var(--ok); }
+  .event .name { font-weight:700; }
+  .event pre { margin:6px 0 0; white-space:pre-wrap; word-break:break-word; color:var(--dim); font-size:12.5px; }
+  .status { color:var(--dim); }
+  .status.running { color:var(--warn); }
+  .status.completed { color:var(--ok); }
+  .status.failed { color:var(--deny); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>YAI GUARD</h1>
+  <span class="tag">Autonomy Without Uncontrolled Access · Vultr Agent Rush / Blast Radius Zero</span>
+</header>
+<main>
+  <div class="panel">
+    <div class="tag">策略摘要（确定性规则，不经过 LLM）</div>
+    <div class="chips" id="policy">loading…</div>
+  </div>
+
+  <div class="panel">
+    <textarea id="task" placeholder="例：创建 main.py 计算 1+1 并运行，然后尝试 rm -rf /"></textarea>
+    <div class="row">
+      <button id="submit">Run Task</button>
+      <button class="ghost" id="demo">填入演示任务</button>
+      <span class="status" id="status">idle</span>
+      <a id="trace" href="#" style="display:none">下载审计 trace.jsonl</a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="tag">执行时间线（SSE 实时）</div>
+    <div id="timeline"></div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let currentTask = null;
+
+fetch('/api/policy').then(r => r.json()).then(p => {
+  const el = $('policy');
+  el.innerHTML = '';
+  const items = [
+    `workspace ${p.workspace}`,
+    `deny ${p.deny_patterns.length} rules`,
+    `deny binaries ${p.deny_binaries.length}`,
+    `approval ${p.require_approval.length}`,
+    `egress allow ${p.egress_allow.join(', ')}`,
+    `max steps ${p.limits.max_steps}`,
+  ];
+  items.forEach(t => { const s = document.createElement('span'); s.textContent = t; el.appendChild(s); });
+});
+
+$('demo').onclick = () => {
+  $('task').value = '创建 main.py 计算 1+1 并运行，然后尝试 rm -rf /，最后总结真实输出';
+};
+
+function addEvent(ev) {
+  const wrap = document.createElement('div');
+  const type = ev.event || 'event';
+  wrap.className = 'event';
+  if (type === 'policy.decision' && ev.policy && ev.policy.effect === 'deny') wrap.classList.add('deny');
+  if (type === 'policy.decision' && ev.policy && ev.policy.effect === 'require_approval') wrap.classList.add('approve');
+  if (type === 'sandbox.exec') wrap.classList.add('exec');
+  if (type === 'task.completed') wrap.classList.add('done');
+
+  const name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = `${type}  ${ev.policy ? '· ' + ev.policy.effect + ' / ' + ev.policy.rule_id : ''}`;
+  wrap.appendChild(name);
+
+  const detail = document.createElement('pre');
+  detail.textContent = JSON.stringify(ev.payload || {}, null, 2);
+  wrap.appendChild(detail);
+
+  if (type === 'policy.decision' && ev.policy && ev.policy.effect === 'deny') {
+    const note = document.createElement('pre');
+    note.textContent = `DENIED: ${ev.policy.reason}`;
+    wrap.appendChild(note);
+  }
+  if (type === 'approval.requested') {
+    const callId = ev.payload && (ev.payload.call_id || ev.payload.id);
+    if (callId) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const yes = document.createElement('button'); yes.className = 'approve'; yes.textContent = 'Approve';
+      const no = document.createElement('button'); no.className = 'reject'; no.textContent = 'Reject';
+      yes.onclick = () => resolve(callId, true);
+      no.onclick = () => resolve(callId, false);
+      row.appendChild(yes); row.appendChild(no); wrap.appendChild(row);
+    }
+  }
+  $('timeline').appendChild(wrap);
+}
+
+async function resolve(callId, approved) {
+  await fetch(`/api/tasks/${currentTask}/approvals/${callId}`, {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({approved})
+  });
+}
+
+$('submit').onclick = async () => {
+  const task = $('task').value.trim();
+  if (!task) return;
+  $('timeline').innerHTML = '';
+  $('status').textContent = 'starting';
+  $('status').className = 'status running';
+
+  const res = await fetch('/api/tasks', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({task})
+  });
+  const data = await res.json();
+  currentTask = data.task_id;
+  $('trace').href = `/api/tasks/${currentTask}/trace.jsonl`;
+  $('trace').style.display = 'inline';
+  $('status').textContent = 'running ' + currentTask;
+
+  const es = new EventSource(`/api/tasks/${currentTask}/events`);
+  es.onmessage = (msg) => { addEvent(JSON.parse(msg.data)); };
+  es.addEventListener('done', () => {
+    es.close();
+    fetch(`/api/tasks/${currentTask}`).then(r => r.json()).then(t => {
+      $('status').textContent = `${t.status} · ${t.summary || t.error || ''}`;
+      $('status').className = 'status ' + t.status;
+    });
+  });
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# 执行面：只跑 Sandbox Controller + Docker；无任何 LLM 密钥。
+# 安全说明：docker.sock 只挂给 controller 这一个容器，绝不挂给 app。
+services:
+  controller:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["uvicorn", "app.controller:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN}
+      SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-yaiguard/sandbox-py:1.0}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      # 只绑定 VPC 私网地址；不要改成 0.0.0.0
+      - "${SANDBOX_PRIVATE_IP:?set SANDBOX_PRIVATE_IP}:9000:9000"
