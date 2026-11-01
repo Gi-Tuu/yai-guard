@@ -40,6 +40,17 @@ cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 ```
 
 演示会打印：`allow → deny(rm -rf /) → approval → deny(curl|sh) → finish`，并生成 `artifacts/demo-trace.jsonl`（`demo_docker.py` 生成 `artifacts/e2e-docker/trace.jsonl`，可用 `verify()` 验证未被篡改）。`smoke_demo.py` 会自动启动 API、批准一次审批并断言 7 项检查全 PASS。
+
+## 提交素材（lablab 直接上传）
+
+| 文件 | 用途 |
+|---|---|
+| [`docs/submission/cover.png`](docs/submission/cover.png) | lablab Cover image（1920×1080，16:9），评委第一眼看到的项目图 |
+| [`docs/submission/YAI-Guard-slides.pptx`](docs/submission/YAI-Guard-slides.pptx) | lablab Slide presentation（12 页，含中文演讲备注，录视频时可当提词器） |
+| [`docs/submission/submission-copy.md`](docs/submission/submission-copy.md) | 标题 / 短描述 / 长描述 / tags，按字符上限预先写好 |
+| [`docs/submission/video-script.md`](docs/submission/video-script.md) | 5 分钟逐秒分镜与旁白 |
+
+重新生成封面与 slides：`python scripts/build_submission_assets.py`（离线、可重复；改文案后重跑）。
 实现细节与偏差说明见 [`docs/08-实现方案与骨架说明.md`](docs/08-实现方案与骨架说明.md)。
 
 ---

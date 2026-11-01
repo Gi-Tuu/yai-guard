@@ -57,7 +57,7 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 | 20 | 云端宿主 `df -i` / `/etc` 对比 | **PENDING** | 依赖 #17；脚本已就绪 | WO-01 |
 | 21 | gVisor `runsc` 兼容性 | **PENDING** | 本机无 runsc；Day-1 探测 | WO-01 |
 | 22 | 视频 ≤5:00 / ≤300MB | **PENDING** | 脚本已写好，未录制 | WO-07 |
-| 23 | slides / cover image | **PENDING** | 大纲已写好，未导出 | WO-07 |
+| 23 | slides / cover image | **PASS** | `YAI-Guard-slides.pptx`（12 页、含 notes）+ `cover.png`（1920×1080）已生成 | WO-07 |
 | 24 | lablab 表单提交 | **BLOCKED** | 报名窗口 11-03 开放 | Lead |
 
 ## 4. 本轮未修的问题（记录，不掩盖）

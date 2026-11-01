@@ -1,5 +1,12 @@
 # YAI Guard · Slides 大纲（10–12 页）
 
+> **交付文件（可直接上传 lablab）**
+> - [`YAI-Guard-slides.pptx`](YAI-Guard-slides.pptx) —— 12 页、16:9、深色终端风；每页带中文演讲者备注，录制视频时可当提词器。
+> - [`cover.png`](cover.png) —— lablab「Cover image」，1920×1080（16:9）。
+> - 生成脚本：[`scripts/build_submission_assets.py`](../../scripts/build_submission_assets.py)；改文案后重跑即可，不联网。
+>
+> **用途**：评委先看封面与 slides，再决定是否点开 Demo/视频；所以 slides 只讲已验证的事实与三个 containment 瞬间。
+
 > 规格：16:9 ｜ 每页 1 标题 + 3–5 bullet ｜ 建议截图位置已标注
 > 原则：只讲已验证的能力；gVisor / 公网 HTTPS / 真实推理在 Day-1–Day-3 才补截图
 
