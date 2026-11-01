@@ -27,14 +27,21 @@ TOKEN = "smoke-token"
 
 def _env() -> dict[str, str]:
     env = dict(os.environ)
+    driver = os.environ.get("SMOKE_SANDBOX_DRIVER", "docker")
     env.update({
         "MOCK_MODEL": "1",
-        "SANDBOX_DRIVER": "docker",
+        "SANDBOX_DRIVER": driver,
         "DEMO_TOKEN": TOKEN,
         "RATE_LIMIT_PER_MIN": "0",
         "ARTIFACT_DIR": tempfile.mkdtemp(prefix="yaig-smoke-"),
         "PYTHONUTF8": "1",
     })
+    if driver == "remote":
+        # 需要先起 sandbox controller：
+        #   cd backend && SANDBOX_TOKEN=smoke-sandbox-token \
+        #   uvicorn app.controller:app --port 9000
+        env["SANDBOX_BASE_URL"] = os.environ.get("SANDBOX_BASE_URL", "http://127.0.0.1:9000")
+        env["SANDBOX_TOKEN"] = os.environ.get("SANDBOX_TOKEN", "smoke-sandbox-token")
     return env
 
 

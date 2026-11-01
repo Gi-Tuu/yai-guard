@@ -44,7 +44,7 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 | 12 | UI：时间线 / 审批 / trace 校验 / 宿主面板 | PASS | 浏览器实测：D-RM-ROOT 红色高亮、Approve 后 completed、校验 `OK · 30 events` |
 | 13 | 提交文案字符限制 | PASS | 标题 47/50，短描述 234/255，长描述 164 words |
 | 14 | 文档链接完整 | PASS | 33 个 markdown 文件 |
-| 15 | 演示路径冒烟（API + SSE + 审批 + 真容器 + trace 校验） | PASS | `scripts/smoke_demo.py`：30 事件 / 7 项检查全 PASS |
+| 15 | 演示路径冒烟（docker 直连 + remote controller 两种模式） | PASS | `scripts/smoke_demo.py`：两种模式均 30 事件 / 7 项检查全 PASS |
 | 16 | 控制面镜像构建 + 容器内 healthz/静态/策略端点 | PASS | [app-image-smoke](../evidence/app-image-smoke-2026-11-01.md)，263 MB |
 
 ## 3. 阻塞与待办
