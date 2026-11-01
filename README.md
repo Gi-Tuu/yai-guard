@@ -31,6 +31,10 @@ python backend/demo_docker.py
 # 5b) 演示路径冒烟（API + SSE + 审批 + 真容器 + trace 校验，需 Docker）
 python scripts/smoke_demo.py
 
+# 5c) 控制面镜像冒烟（可选）
+docker build -f backend/Dockerfile -t yaiguard/app:0.1 .
+docker run --rm yaiguard/app:0.1 python -c "from app.main import app; print(app.title)"
+
 # 6) 本地 Web（需要 pip install -r backend/requirements.txt）
 cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 ```

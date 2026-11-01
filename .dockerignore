@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gitattributes
+artifacts
+docs
+research
+dispatch
+scripts
+**/__pycache__
+**/*.pyc
+.env
+.env.*
+!.env.example
