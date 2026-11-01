@@ -490,9 +490,9 @@ def slide_defense(prs):
     header(slide, "09 · Defense in depth", "Policy is UX. Containment is the guarantee.")
     box(slide, 0.85, 2.0, 5.7, 3.9, fill=PANEL, line=LINE)
     label(slide, 1.1, 2.15, 5.0, 0.3, "POLICY LAYER", size=10, color=AMBER, font=MONO)
-    label(slide, 1.1, 2.5, 5.1, 0.4, "68 red-team cases", size=20, color=TEXT, font=FONT_SEMI, bold=True)
+    label(slide, 1.1, 2.5, 5.1, 0.4, "82 red-team cases", size=20, color=TEXT, font=FONT_SEMI, bold=True)
     bullets(slide, 1.1, 3.05, 5.1, 2.6, [
-        ("deny 48", " · approval 13 · allow 7"),
+        ("deny 55", " · approval 20 · allow 7"),
         ("Bypasses documented", ": encoding, two-stage, python -c"),
         ("Fail-closed", ": unknown binary → approval"),
         ("Honest", ": filters are not a security boundary"),

@@ -42,6 +42,7 @@
       "docker", "kubectl", "crictl", "nc", "ncat", "netcat", "socat"
     ],
     "deny_patterns": [
+      {"id": "D-PYTHON-INLINE-DANGER", "pattern": "python[0-9.]*\\s+(-c|--command)\\s+.*(rmtree\\s*\\(|shutil\\.rmtree|subprocess\\.(run|call|Popen)[^;]*(rm|sh|bash)|os\\.system\\s*\\([^)]*(rm\\s+-rf|/etc|/root|/workspace/\\.\\.))", "reason": "inline Python performs destructive operations", "risk": "critical"},
       {"id": "D-RM-ROOT", "pattern": "(^|[\\s;&|(\\x60])rm\\s+(-[^\\s]+\\s+)*-(rf|fr)\\s+(/|/\\*|~|\\$HOME)(\\s|$|[);&|(\\x60])", "reason": "recursive delete of root/home is forbidden", "risk": "critical"},
       {"id": "D-RM-NO-PRESERVE", "pattern": "--no-preserve-root", "reason": "GNU failsafe bypass is forbidden", "risk": "critical"},
       {"id": "D-FORK-BOMB", "pattern": ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:", "reason": "fork bomb", "risk": "critical"},

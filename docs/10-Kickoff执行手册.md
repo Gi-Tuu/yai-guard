@@ -2,6 +2,7 @@
 
 > 目标：**3 小时内**从"领到 gift code"走到"公网 HTTPS Demo 跑通一条真实任务"。
 > 前提：报名已完成（lablab enroll + Discord + 1 人 team 选 Challenge 1）、全新邮箱、已绑卡/PayPal。
+> **领取细节见 [`11-Credits领取手册.md`](11-Credits领取手册.md)**；时区有 1 小时口径冲突，**按 22:30 上线、11-09 03:00 提交执行**。
 > 出问题时的降级路径在 §8；**任何一步卡超过 20 分钟就跳降级，不要硬扛**。
 
 ---
@@ -21,8 +22,7 @@
 
 | 时间 | 动作 | 门禁 |
 |---|---|---|
-| 23:00–23:15 | 参加 kickoff，**记录 gift code**，确认 credits 到期日/覆盖范围 | 拿到 gift code |
-| 23:15–23:30 | 注册 Vultr（新邮箱）→ 绑卡 → Billing → Gift Code → 确认 `$200.00` | 余额到账 |
+| 23:00–23:15 | 参加 kickoff，**记录 gift code**，确认 credits 到期日/覆盖范围 | 拿到 gift code || 23:15–23:30 | 注册 Vultr（新邮箱）→ 绑卡 → Billing → Gift Code → 确认 `$200.00` | 余额到账 |
 | 23:30–23:50 | 创建两台 VM（同 region、同 VPC） | 两台可 SSH |
 | 23:50–00:05 | 两个 Firewall Group + VPC 私网验证 | 私网互通、公网只开 443 |
 | 00:05–00:25 | 两台装 Docker / Compose / git | `docker run hello-world` OK |
@@ -138,6 +138,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "https://$DOMAIN/healthz"
 ```
 
 `?` 说明：`Caddyfile` 用 `{$DOMAIN}` / `{$ACME_EMAIL}`，由 compose 注入。
+> 这两个文件已在本机用官方镜像校验过（见 [`docs/evidence/deploy-config-validation-2026-11-01.md`](evidence/deploy-config-validation-2026-11-01.md)）；当晚只需替换域名与密钥。
 
 ---
 

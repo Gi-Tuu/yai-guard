@@ -1,7 +1,7 @@
 # WO-05 · 策略规则扩充 + 红队语料
 
 > 日期：2026-10-31 ｜ 状态：**离线全绿**（不需要 key / Docker）
-> 语料：[`backend/tests/corpus/bypass.jsonl`](../../backend/tests/corpus/bypass.jsonl)（68 条：deny 48 / approval 13 / allow 7）
+> 语料：[`backend/tests/corpus/bypass.jsonl`](../../backend/tests/corpus/bypass.jsonl)（82 条：deny 55 / approval 20 / allow 7）
 > 回归：[`backend/tests/test_policy_corpus.py`](../../backend/tests/test_policy_corpus.py)
 
 ## 1. 本轮新增规则
@@ -13,6 +13,8 @@
 | `D-PIPE-SHELL` | deny | `echo x \| sh`、`printf '\x72…' \| sh` | 任意内容管道进 shell；具体规则（curl/base64）覆盖不到编码/拼接变体 |
 | `D-INFINITE-LOOP` | deny | `while true; do :; done` | 无界循环属于资源攻击，应尽快失败而不是等 wall-clock |
 | `D-FIND-DELETE` | deny | `find / -delete`、`find /workspace -name '*.py' -delete` | `find -delete` 是 rm 的等价物，`find` 本身在白名单里 |
+| `D-PYTHON-INLINE-DANGER` | deny | `python3 -c "import shutil; shutil.rmtree('/')"`、`subprocess.run(['rm','-rf','/'])` | 内联 Python 能绕过 argv 白名单执行破坏性操作；`os.system('id')` 仍走审批，不误杀 |
+| `D-SYMLINK-OUTSIDE` / `D-SYMLINK-TRAVERSAL` / `D-SYMLINK-DEST` | deny | `ln -s /etc /workspace/etc`、`ln -s ../../etc/passwd ...` | symlink 是「路径看似在 /workspace、运行时指向宿主」的典型绕过；工作区内 symlink 仍需审批 |
 
 已有规则保持不变（只加不删）。
 

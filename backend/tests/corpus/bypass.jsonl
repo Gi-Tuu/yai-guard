@@ -66,3 +66,17 @@
 {"command": "cat main.py", "expect": "allow", "note": "演示主线"}
 {"command": "echo hello", "expect": "allow", "note": "最普通的命令"}
 {"command": "python3 main.py && ls /workspace", "expect": "allow", "note": "两段均在白名单内"}
+{"command": "python3 -c \"import shutil; shutil.rmtree('/')\"", "expect": "deny", "rule": "D-PYTHON-INLINE-DANGER", "note": "内联 Python 删根：rmtree"}
+{"command": "python3 -c \"import subprocess; subprocess.run(['rm','-rf','/'])\"", "expect": "deny", "rule": "D-PYTHON-INLINE-DANGER", "note": "内联 Python 调 subprocess 删根"}
+{"command": "python3 -c \"import os; os.system('rm -rf /')\"", "expect": "deny", "rule": "D-PYTHON-INLINE-DANGER", "note": "内联 Python os.system 删根"}
+{"command": "python3 -c \"import os; os.remove('/workspace/x')\"", "expect": "approval", "rule": "R-PYTHON-C", "note": "内联 Python 删除工作区文件：审批，不误判为 deny"}
+{"command": "python3 -c \"print(open('/etc/passwd').read())\"", "expect": "approval", "rule": "R-PYTHON-C", "note": "内联读系统文件：审批；容器只读+非 root 兜底"}
+{"command": "ln -s /etc /workspace/etc", "expect": "deny", "rule": "D-SYMLINK-OUTSIDE", "note": "符号链接指向宿主 /etc"}
+{"command": "ln -s /etc/shadow /workspace/shadow", "expect": "deny", "rule": "D-CREDENTIAL", "note": "符号链接凭证路径：原始正则先命中"}
+{"command": "ln -s ../../etc/passwd /workspace/leak", "expect": "deny", "rule": "D-SYMLINK-TRAVERSAL", "note": "相对路径穿越 symlink"}
+{"command": "ln -s /workspace/real.txt /workspace/link.txt", "expect": "approval", "rule": "R-LN-SYMLINK", "note": "工作区内 symlink：审批"}
+{"command": "printf 'payload' | base64 -d > run.sh", "expect": "approval", "note": "两段式第一步：解码落盘"}
+{"command": "chmod +x run.sh && ./run.sh", "expect": "approval", "note": "两段式第二步：赋权并执行"}
+{"command": "sh run.sh", "expect": "approval", "note": "执行落盘脚本：shell 包装器审批"}
+{"command": "bash -c \"$(cat payload.sh)\"", "expect": "approval", "note": "命令替换进 shell：审批 + 容器兜底"}
+{"command": "find /workspace -type l -delete", "expect": "deny", "rule": "D-FIND-DELETE", "note": "find 删除符号链接"}

@@ -111,6 +111,7 @@ cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 | 9 | [`docs/08-实现方案与骨架说明.md`](docs/08-实现方案与骨架说明.md) | 已实现的模块、运行方式、与设计的偏差、Day-1 清单 |
 | 10 | [`docs/09-派单与并行开发计划.md`](docs/09-派单与并行开发计划.md) | 8 张可派工单、依赖图、冲突矩阵、验收总表 |
 | 11 | [`docs/10-Kickoff执行手册.md`](docs/10-Kickoff执行手册.md) | 11-03 23:00 起 3 小时上线的逐条命令与降级路径 |
+| 12 | [`docs/11-Credits领取手册.md`](docs/11-Credits领取手册.md) | $200 credits 的领取时点、兑换路径、前置条件、失败处理 |
 | 11 | [`docs/evidence/`](docs/evidence/) | 波次 1 实测证据：containment、策略红队、API 加固、推理接入状态 |
 
 证据台账（每条事实附 URL + 访问日期 + 原文摘录）：
@@ -155,7 +156,7 @@ D5   11-08           终审 · 复现测试 · **11-09 03:00 前提交**        
 | M3 | `curl … \| sh` + `169.254.169.254` | 策略拒绝；容器内仅 `lo`，出站 `Temporary failure in name resolution` | 攻击容器 `--network=none` |
 
 完整原始输出、uid/capability/mount 检查与集成测试结果：[`docs/evidence/WO-01-containment.md`](docs/evidence/WO-01-containment.md)。
-策略红队语料（68 条）与残余风险：[`docs/evidence/WO-05-policy.md`](docs/evidence/WO-05-policy.md)。
+策略红队语料（82 条）与残余风险：[`docs/evidence/WO-05-policy.md`](docs/evidence/WO-05-policy.md)。
 API 鉴权/限流/并发与 trace 校验：[`docs/evidence/WO-06-audit-api.md`](docs/evidence/WO-06-audit-api.md)。
 
 ---

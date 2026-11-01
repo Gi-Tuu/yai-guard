@@ -39,13 +39,13 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 | 7 | M3 零网络（仅 lo） | PASS | WO-01 §4 |
 | 8 | 非 root / 零 capability / mount 拒绝 | PASS | WO-01 §5 |
 | 9 | 宿主指标前后一致（本地） | PASS | 进程 473→473，磁盘 51.75→51.75 GB，容器 0→0 |
-| 10 | 策略红队语料 68 条 | PASS | [WO-05](../evidence/WO-05-policy.md) |
+| 10 | 策略红队语料 82 条 | PASS | [WO-05](../evidence/WO-05-policy.md) |
 | 11 | API 401 / 429 / 并发 429 / 校验端点 | PASS | [WO-06](../evidence/WO-06-audit-api.md) |
 | 12 | UI：时间线 / 审批 / trace 校验 / 宿主面板 | PASS | 浏览器实测：D-RM-ROOT 红色高亮、Approve 后 completed、校验 `OK · 30 events` |
 | 13 | 提交文案字符限制 | PASS | 标题 47/50，短描述 234/255，长描述 164 words |
 | 14 | 文档链接完整 | PASS | 33 个 markdown 文件 |
 | 15 | 演示路径冒烟（docker 直连 + remote controller 两种模式） | PASS | `scripts/smoke_demo.py`：两种模式均 30 事件 / 7 项检查全 PASS |
-| 16 | 控制面镜像构建 + 容器内 healthz/静态/策略端点 | PASS | [app-image-smoke](../evidence/app-image-smoke-2026-11-01.md)，263 MB |
+| 16 | 控制面镜像 + 部署配置校验 | PASS | [镜像冒烟](../evidence/app-image-smoke-2026-11-01.md) + [Caddy/compose 校验](../evidence/deploy-config-validation-2026-11-01.md) |
 
 ## 3. 阻塞与待办
 

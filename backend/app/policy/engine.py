@@ -185,6 +185,12 @@ class PolicyEngine:
                     return rm_decision
                 approval = approval or rm_decision
 
+            if exe == "ln":
+                ln_decision = self._eval_ln(argv)
+                if ln_decision.effect is Effect.DENY:
+                    return ln_decision
+                approval = approval or ln_decision
+
             if exe in READ_PATH_BINARIES:
                 outside = self._outside_path_arg(argv)
                 if outside:
@@ -321,6 +327,52 @@ class PolicyEngine:
         return Decision(
             Effect.REQUIRE_APPROVAL, "R-RM",
             f"delete requires approval: {' '.join(targets)}", "medium",
+        )
+
+    def _eval_ln(self, argv: list[str]) -> Decision:
+        """symlink 目标越界直接拒绝；工作区内 symlink 仍需审批。
+
+        为什么单独检查：symlink 是「路径看起来在 /workspace 内、运行时却指向宿主」
+        最容易被忽视的绕过；策略层先拦，容器只读根/非 root 再兜底。
+        """
+        symlink = False
+        targets: list[str] = []
+        for arg in argv[1:]:
+            if arg.startswith("-") and arg != "-":
+                if "s" in arg.lstrip("-"):
+                    symlink = True
+            else:
+                targets.append(arg)
+        if not symlink:
+            return Decision(Effect.REQUIRE_APPROVAL, "R-BIN-ln", "ln requires approval", "medium")
+        if len(targets) < 2:
+            return Decision(Effect.DENY, "D-SYMLINK-ARGS", "ln -s needs a target and a link name", "medium")
+        source, dest = targets[0], targets[1]
+        if ".." in source.split("/"):
+            return Decision(
+                Effect.DENY, "D-SYMLINK-TRAVERSAL",
+                f"symlink target contains traversal: {source}", "critical",
+                suggestion="link only to a path directly under /workspace",
+            )
+        try:
+            resolved_dest = normalize_path(dest, self.workspace)
+            resolved_source = normalize_path(source, self.workspace)
+        except ValueError as exc:
+            return Decision(Effect.DENY, "D-SYMLINK-INVALID", str(exc), "high")
+        if not is_within(resolved_dest, self.workspace):
+            return Decision(
+                Effect.DENY, "D-SYMLINK-DEST",
+                f"symlink destination outside /workspace: {resolved_dest}", "critical",
+            )
+        if source.startswith("/") and not is_within(resolved_source, self.workspace):
+            return Decision(
+                Effect.DENY, "D-SYMLINK-OUTSIDE",
+                f"symlink target outside /workspace: {resolved_source}", "critical",
+                suggestion="link only within /workspace; host paths are never allowed",
+            )
+        return Decision(
+            Effect.REQUIRE_APPROVAL, "R-LN-SYMLINK",
+            f"creating symlink {source} -> {dest}", "medium",
         )
 
     # ---------------------------------------------------------------- helpers
