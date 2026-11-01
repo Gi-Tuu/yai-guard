@@ -11,12 +11,18 @@ $ python scripts/verify_submission.py
 [PASS] unit tests                 OK
 [PASS] host-exec redline          OK: no host-execution primitives outside app/sandbox/ and app/controller.py
 [PASS] offline demo + hash chain  hash-chain verify = True
-[PASS] markdown links             30 files checked
-[PASS] git hygiene                65 files, no secrets/artifacts tracked
+[PASS] markdown links             33 files checked
+[PASS] git hygiene                85 files, no secrets/artifacts tracked
 [PASS] LICENSE                    MIT found
 [PASS] README keywords            Vultr, Containment, Quickstart, MIT, sandbox
 [PASS] submission docs            slides + copy present
 [SKIP] video spec                 docs/submission/video.mp4 not recorded yet
+[SKIP] demo path smoke            set YAIG_SMOKE_DEMO=1 to run (needs Docker + image)
+RESULT: ALL CHECKS PASSED (2 skipped)
+
+# 有 Docker 时：
+$ YAIG_SMOKE_DEMO=1 python scripts/verify_submission.py
+[PASS] demo path smoke            deny rm -rf / | deny curl|sh | approval happened | real exec | trace verified | sse events
 RESULT: ALL CHECKS PASSED (1 skipped)
 ```
 
@@ -37,20 +43,21 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 | 11 | API 401 / 429 / 并发 429 / 校验端点 | PASS | [WO-06](../evidence/WO-06-audit-api.md) |
 | 12 | UI：时间线 / 审批 / trace 校验 / 宿主面板 | PASS | 浏览器实测：D-RM-ROOT 红色高亮、Approve 后 completed、校验 `OK · 30 events` |
 | 13 | 提交文案字符限制 | PASS | 标题 47/50，短描述 234/255，长描述 164 words |
-| 14 | 文档链接完整 | PASS | 30 个 markdown 文件 |
+| 14 | 文档链接完整 | PASS | 33 个 markdown 文件 |
+| 15 | 演示路径冒烟（API + SSE + 审批 + 真容器 + trace 校验） | PASS | `scripts/smoke_demo.py`：30 事件 / 7 项检查全 PASS |
 
 ## 3. 阻塞与待办
 
 | # | 项 | 状态 | 原因 / 下一步 | owner |
 |---|---|---|---|---|
-| 15 | Vultr 双 VM + VPC + TLS + 防火墙 | **BLOCKED** | 需 11-03 kickoff 后才能领 $200 credits；代码/文件已就绪 | WO-04 |
-| 16 | 公网 HTTPS Demo 无痕可打开 | **BLOCKED** | 依赖 #15 | WO-04 |
-| 17 | 真实 DeepSeek tool-calling 收敛 | **PENDING** | 无真实 key；Day-0 清单见 [WO-02](../evidence/WO-02-inference.md) §3 | WO-02 |
-| 18 | 云端宿主 `df -i` / `/etc` 对比 | **PENDING** | 依赖 #15；脚本已就绪 | WO-01 |
-| 19 | gVisor `runsc` 兼容性 | **PENDING** | 本机无 runsc；Day-1 探测 | WO-01 |
-| 20 | 视频 ≤5:00 / ≤300MB | **PENDING** | 脚本已写好，未录制 | WO-07 |
-| 21 | slides / cover image | **PENDING** | 大纲已写好，未导出 | WO-07 |
-| 22 | lablab 表单提交 | **BLOCKED** | 报名窗口 11-03 开放 | Lead |
+| 16 | Vultr 双 VM + VPC + TLS + 防火墙 | **BLOCKED** | 需 11-03 kickoff 后才能领 $200 credits；代码/文件已就绪 | WO-04 |
+| 17 | 公网 HTTPS Demo 无痕可打开 | **BLOCKED** | 依赖 #16 | WO-04 |
+| 18 | 真实 DeepSeek tool-calling 收敛 | **PENDING** | 无真实 key；Day-0 清单见 [WO-02](../evidence/WO-02-inference.md) §3 | WO-02 |
+| 19 | 云端宿主 `df -i` / `/etc` 对比 | **PENDING** | 依赖 #16；脚本已就绪 | WO-01 |
+| 20 | gVisor `runsc` 兼容性 | **PENDING** | 本机无 runsc；Day-1 探测 | WO-01 |
+| 21 | 视频 ≤5:00 / ≤300MB | **PENDING** | 脚本已写好，未录制 | WO-07 |
+| 22 | slides / cover image | **PENDING** | 大纲已写好，未导出 | WO-07 |
+| 23 | lablab 表单提交 | **BLOCKED** | 报名窗口 11-03 开放 | Lead |
 
 ## 4. 本轮未修的问题（记录，不掩盖）
 

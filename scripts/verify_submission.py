@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -153,11 +154,25 @@ def check_video() -> Result:
                   f"{duration:.1f}s, {size / 1024 / 1024:.1f} MB")
 
 
+def check_demo_path() -> Result:
+    """真实 API + Docker + SSE + 审批 + trace 校验（默认跳过，需显式开启）。
+
+    YAIG_SMOKE_DEMO=1 时运行；需要 Docker daemon 与 yaiguard/sandbox-py:1.0。
+    """
+    if os.environ.get("YAIG_SMOKE_DEMO") != "1":
+        return Result("demo path smoke", "SKIP", "set YAIG_SMOKE_DEMO=1 to run (needs Docker + image)")
+    proc = run([sys.executable, "scripts/smoke_demo.py"], timeout=180)
+    output = (proc.stdout or "") + (proc.stderr or "")
+    ok = proc.returncode == 0 and "[FAIL]" not in output
+    tail = [line for line in output.splitlines() if line.strip()][-6:]
+    return Result("demo path smoke", "PASS" if ok else "FAIL", " | ".join(tail)[:240])
+
+
 def main() -> int:
     checks = [
         check_tests(), check_redline(), check_offline_demo(), check_links(),
         check_git_hygiene(), check_license(), check_readme(), check_slides_copy(),
-        check_video(),
+        check_video(), check_demo_path(),
     ]
     width = max(len(c.name) for c in checks)
     failures = 0

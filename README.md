@@ -28,11 +28,14 @@ python -m unittest discover -s backend/tests -t backend -p "test_docker_backend.
 # 5) 真实 Docker 端到端（Mock 模型 + 真容器 + 真策略 + 真 trace）
 python backend/demo_docker.py
 
+# 5b) 演示路径冒烟（API + SSE + 审批 + 真容器 + trace 校验，需 Docker）
+python scripts/smoke_demo.py
+
 # 6) 本地 Web（需要 pip install -r backend/requirements.txt）
 cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 ```
 
-演示会打印：`allow → deny(rm -rf /) → approval → deny(curl|sh) → finish`，并生成 `artifacts/demo-trace.jsonl`（`demo_docker.py` 生成 `artifacts/e2e-docker/trace.jsonl`，可用 `verify()` 验证未被篡改）。
+演示会打印：`allow → deny(rm -rf /) → approval → deny(curl|sh) → finish`，并生成 `artifacts/demo-trace.jsonl`（`demo_docker.py` 生成 `artifacts/e2e-docker/trace.jsonl`，可用 `verify()` 验证未被篡改）。`smoke_demo.py` 会自动启动 API、批准一次审批并断言 7 项检查全 PASS。
 实现细节与偏差说明见 [`docs/08-实现方案与骨架说明.md`](docs/08-实现方案与骨架说明.md)。
 
 ---
