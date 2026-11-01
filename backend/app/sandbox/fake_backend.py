@@ -8,6 +8,7 @@ from __future__ import annotations
 import posixpath
 import re
 import time
+from datetime import datetime, timezone
 
 from .interface import ExecResult, Limits
 
@@ -38,6 +39,18 @@ class FakeSandbox:
 
     def host_fingerprint(self) -> dict:
         return dict(self.host, sandbox_hostname=f"yaig-sandbox-{next(iter(self._tasks), 'idle')}")
+
+    def host_snapshot(self) -> dict:
+        """静态假数据：让 UI 的「宿主完好」面板在离线模式也能渲染。"""
+        return {
+            "source": "fake",
+            "df_inodes": "Filesystem Inodes IUsed IFree IUse% /  1048576 1200 1047376 1%",
+            "etc_files": 1180,
+            "uptime": "up 3 days, 4:05",
+            "proc_count": 42,
+            "connections": 0,
+            "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        }
 
     # ------------------------------------------------------------------ files
     def put_file(self, task_id: str, path: str, data: bytes) -> None:

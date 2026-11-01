@@ -8,14 +8,65 @@
 from __future__ import annotations
 
 import base64
+import os
 import shlex
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .interface import ExecResult, Limits
 
 SANDBOX_IMAGE = "yaiguard/sandbox-py:1.0"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def collect_host_snapshot() -> dict:
+    """采集 docker 所在宿主机的指纹（只读 /proc + statvfs，不执行 shell）。
+
+    用于 UI 的「宿主完好」面板：任务前后各采一次，比较文件系统 inode、
+    /etc 文件数、uptime、进程数、连接数是否漂移。
+
+    注意：在容器内运行（例如 sandbox VM 上的 controller 容器）时，读到的是
+    该容器的命名空间，而不是物理机；真实测试请在宿主机上直接跑
+    `deploy/evidence/host_fingerprint.sh`。Windows 宿主无 /proc，返回 unavailable。
+    """
+    snapshot: dict = {"source": "host", "captured_at": _now(), "df_inodes": None,
+                      "etc_files": None, "uptime": None, "proc_count": None,
+                      "connections": None}
+    if os.name == "nt" or not Path("/proc").exists():
+        snapshot["source"] = "unavailable"
+        return snapshot
+    try:
+        vfs = os.statvfs("/")
+        used_pct = 0 if vfs.f_files == 0 else int(100 * (vfs.f_files - vfs.f_ffree) / vfs.f_files)
+        snapshot["df_inodes"] = (
+            f"total={vfs.f_files} free={vfs.f_ffree} used%={used_pct}"
+        )
+        etc_count = 0
+        for _root, _dirs, files in os.walk("/etc"):
+            etc_count += len(files)
+            if etc_count > 100000:
+                break
+        snapshot["etc_files"] = etc_count
+        uptime_s = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+        snapshot["uptime"] = f"up {uptime_s:.0f}s"
+        snapshot["proc_count"] = sum(
+            1 for entry in Path("/proc").iterdir() if entry.name.isdigit()
+        )
+        conn = 0
+        for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+            path = Path(name)
+            if path.exists():
+                conn += max(0, len(path.read_text(encoding="utf-8").splitlines()) - 1)
+        snapshot["connections"] = conn
+    except OSError as exc:  # 权限/文件缺失：如实降级，不伪造数据
+        snapshot["source"] = "error"
+        snapshot["error"] = f"{type(exc).__name__}: {exc}"
+    return snapshot
 
 
 class DockerError(RuntimeError):
@@ -126,6 +177,9 @@ class DockerSandbox:
         except OSError:
             kernel = "unknown"
         return {"kernel": kernel}
+
+    def host_snapshot(self) -> dict:
+        return collect_host_snapshot()
 
     # ---------------------------------------------------------------- helpers
     def _run(self, args: list[str], input_text: str | None = None) -> subprocess.CompletedProcess:

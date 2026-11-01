@@ -81,6 +81,7 @@ def run_agent(
         "runtime": getattr(sandbox, "runtime", "unknown"),
         "limits": limits,
         "host": sandbox.host_fingerprint(),
+        "host_fingerprint": _host_snapshot(sandbox),
     })
 
     messages: list[dict[str, Any]] = [
@@ -159,7 +160,9 @@ def run_agent(
                                          })})
                         continue
 
+                host_before = _host_snapshot(sandbox) if call.name == "run_command" else None
                 result = execute_tool(call, sandbox, task_id, max_output_bytes=max_output)
+                host_after = _host_snapshot(sandbox) if call.name == "run_command" else None
 
                 if call.name == "run_command":
                     exec_meta = result.pop("_exec", {}) or {}
@@ -167,7 +170,18 @@ def run_agent(
                     cwd = result.pop("_cwd", "/workspace")
                     record(actor="sandbox", event="sandbox.exec", payload={
                         "tool": call.name,
-                    }, execution={**exec_meta, "argv": argv, "cwd": cwd})
+                    }, execution={**exec_meta, "argv": argv, "cwd": cwd,
+                                  "host_before": host_before, "host_after": host_after})
+                    killed = exec_meta.get("killed_reason")
+                    if killed:
+                        record(actor="sandbox", event="resource.limit", payload={
+                            "kind": killed,
+                            "exit_code": exec_meta.get("exit_code"),
+                            "pids_limit": limits.get("pids"),
+                            "memory_mb": limits.get("memory_mb"),
+                            "oom": killed == "oom",
+                            "timed_out": bool(exec_meta.get("timed_out")),
+                        })
                 elif call.name == "write_file":
                     record(actor="sandbox", event="file.changed", payload={
                         "path": call.arguments.get("path"),
@@ -192,6 +206,17 @@ def run_agent(
             "task_id": task_id,
             "reason": "lifecycle_end",
         })
+
+
+def _host_snapshot(sandbox: SandboxBackend) -> dict:
+    """沙箱后端的宿主指纹；任何异常都返回 {}，绝不因为取证失败而中断任务。"""
+    getter = getattr(sandbox, "host_snapshot", None)
+    if not callable(getter):
+        return {}
+    try:
+        return getter() or {}
+    except Exception:  # noqa: BLE001 - 取证是旁路，不能影响主流程
+        return {}
 
 
 def _limits_from(policy: PolicyEngine):

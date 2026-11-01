@@ -36,6 +36,16 @@ def healthz() -> dict[str, Any]:
     return {"ok": True, "runtime": _RUNTIME or "runc", "image": _IMAGE}
 
 
+@app.get("/v1/host/snapshot")
+def host_snapshot(x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """宿主指纹：供 app VM 的「宿主完好」面板前后对比。
+
+    不加 token 校验会泄露主机负载信息，因此和其它端点一致要求 token。
+    """
+    _auth(x_sandbox_token)
+    return {"ok": True, "snapshot": _backend.host_snapshot()}
+
+
 @app.post("/v1/sandbox/{task_id}")
 def create(task_id: str, limits: dict[str, Any] | None = None,
            x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:

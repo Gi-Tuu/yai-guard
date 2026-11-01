@@ -63,6 +63,14 @@ class RemoteSandbox:
         except RuntimeError:
             return {}
 
+    def host_snapshot(self) -> dict:
+        """由 sandbox VM 的 controller 采集后回传；app 进程本身不执行任何 shell。"""
+        try:
+            payload = self._request("GET", "/v1/host/snapshot")
+            return payload.get("snapshot") or {}
+        except RuntimeError:
+            return {}
+
     # ---------------------------------------------------------------- helpers
     def _request(self, method: str, path: str, body: dict | bytes | None = None, *, raw: bool = False):
         data = None

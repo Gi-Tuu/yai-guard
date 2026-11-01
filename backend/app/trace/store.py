@@ -24,6 +24,36 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def verify_file(path: str | Path) -> tuple[bool, int | None]:
+    """独立校验一个 JSONL trace 文件（不依赖内存中的 TraceStore 实例）。
+
+    API 的 "校验完整性" 端点用它读取已落盘文件，因此客户端可先下载、再校验。
+    返回 (ok, 第一个坏事件的 seq)；文件不存在返回 (False, None)。
+    """
+    p = Path(path)
+    if not p.exists():
+        return False, None
+    prev = GENESIS
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            return False, None
+        stored_hash = ev.get("hash")
+        stored_prev = ev.get("prev_hash")
+        if stored_prev != prev:
+            return False, ev.get("seq")
+        body = {k: v for k, v in ev.items() if k != "hash"}
+        expect = "sha256:" + hashlib.sha256((prev + canonical_json(body)).encode("utf-8")).hexdigest()
+        if stored_hash != expect:
+            return False, ev.get("seq")
+        prev = stored_hash
+    return True, None
+
+
 class TraceError(RuntimeError):
     pass
 

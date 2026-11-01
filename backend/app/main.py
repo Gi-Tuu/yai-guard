@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, Header, HTTPException, Request
     from fastapi.responses import FileResponse, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("fastapi is required to run the API") from exc
@@ -37,7 +38,7 @@ from app.agent.loop import run_agent
 from app.agent.mock_model import MockModel
 from app.policy import Decision, EvalContext, PolicyEngine, ToolCall
 from app.sandbox.fake_backend import FakeSandbox
-from app.trace import TraceStore, new_trace_id
+from app.trace import TraceStore, new_trace_id, verify_file
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -72,6 +73,46 @@ class TaskState:
 
 TASKS: dict[str, TaskState] = {}
 PENDING: dict[tuple[str, str], dict[str, Any]] = {}
+
+# 公网 Demo 保护：全局并发 = 1（演示期串行，保证容器生命周期可控）
+_TASK_SLOT = threading.BoundedSemaphore(1)
+_RATE_LOCK = threading.Lock()
+_RATE_HITS: dict[str, list[float]] = {}
+RATE_WINDOW_S = 60.0
+
+
+def _require_demo_token(token: str | None) -> None:
+    """DEMO_TOKEN 未设置时不鉴权（本地开发）；设置了就必须带 X-Demo-Token。"""
+    expected = os.environ.get("DEMO_TOKEN", "")
+    if expected and not secrets.compare_digest(token or "", expected):
+        raise HTTPException(status_code=401, detail="missing or invalid X-Demo-Token")
+
+
+def _rate_limit_per_min() -> int:
+    try:
+        return int(os.environ.get("RATE_LIMIT_PER_MIN", "10"))
+    except ValueError:
+        return 10
+
+
+def _enforce_rate_limit(request: Request) -> None:
+    """每 IP 令牌桶（滑动窗口）。<=0 表示关闭，仅内部/测试使用。"""
+    limit = _rate_limit_per_min()
+    if limit <= 0:
+        return
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    with _RATE_LOCK:
+        hits = [t for t in _RATE_HITS.get(ip, []) if now - t < RATE_WINDOW_S]
+        if len(hits) >= limit:
+            _RATE_HITS[ip] = hits
+            raise HTTPException(
+                status_code=429,
+                detail=f"rate limit exceeded ({limit} req/min)",
+                headers={"Retry-After": str(max(1, int(RATE_WINDOW_S - (now - hits[0]))))},
+            )
+        hits.append(now)
+        _RATE_HITS[ip] = hits
 
 
 # --------------------------------------------------------------------- runtime
@@ -157,6 +198,10 @@ def _run_task(state: TaskState) -> None:
                 sandbox.destroy(state.task_id)
             except Exception:  # noqa: BLE001
                 pass
+        try:
+            _TASK_SLOT.release()
+        except ValueError:  # pragma: no cover - 只有异常路径可能重复释放
+            pass
 
 
 # ---------------------------------------------------------------------- routes
@@ -172,16 +217,30 @@ def get_policy() -> dict[str, Any]:
 
 
 @app.post("/api/tasks")
-def create_task(body: dict[str, Any]) -> dict[str, Any]:
+def create_task(body: dict[str, Any], request: Request,
+                x_demo_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_demo_token(x_demo_token)
     task = str(body.get("task", "")).strip()
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
+    _enforce_rate_limit(request)
+
+    # 演示期全局串行：第二个任务直接 429，而不是排队；避免容器并发撑爆沙箱 VM。
+    if not _TASK_SLOT.acquire(blocking=False):
+        raise HTTPException(status_code=429,
+                            detail="another task is already running (global concurrency = 1)",
+                            headers={"Retry-After": "10"})
+
     task_id = "tk_" + uuid.uuid4().hex[:10]
     trace_id = new_trace_id()
     state = TaskState(task_id=task_id, trace_id=trace_id, task=task)
     with _LOCK:
         TASKS[task_id] = state
-    threading.Thread(target=_run_task, args=(state,), daemon=True).start()
+    try:
+        threading.Thread(target=_run_task, args=(state,), daemon=True).start()
+    except Exception:
+        _TASK_SLOT.release()
+        raise
     return {"task_id": task_id, "trace_id": trace_id, "status": state.status}
 
 
@@ -208,6 +267,7 @@ def stream_events(task_id: str) -> StreamingResponse:
 
     def generate():
         cursor = 0
+        last_ping = time.monotonic()
         while True:
             with _LOCK:
                 batch = state.events[cursor:]
@@ -218,13 +278,19 @@ def stream_events(task_id: str) -> StreamingResponse:
             if finished and not batch:
                 yield "event: done\ndata: {}\n\n"
                 return
+            # 心跳：防止 Caddy/浏览器把空闲连接判死（SSE 重连会丢开区间的事件）
+            if time.monotonic() - last_ping >= 15.0:
+                last_ping = time.monotonic()
+                yield ": ping\n\n"
             time.sleep(0.2)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/api/tasks/{task_id}/approvals/{call_id}")
-def resolve_approval(task_id: str, call_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def resolve_approval(task_id: str, call_id: str, body: dict[str, Any],
+                     x_demo_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_demo_token(x_demo_token)
     key = (task_id, call_id)
     with _LOCK:
         record = PENDING.get(key)
@@ -233,6 +299,19 @@ def resolve_approval(task_id: str, call_id: str, body: dict[str, Any]) -> dict[s
         record["approved"] = bool(body.get("approved", False))
         record["event"].set()
     return {"ok": True, "approved": record["approved"]}
+
+
+@app.get("/api/tasks/{task_id}/trace/verify")
+def verify_trace(task_id: str) -> dict[str, Any]:
+    """对已落盘的 trace 重新计算哈希链：返回第一个坏事件的 seq。"""
+    state = TASKS.get(task_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="task not found")
+    path = TRACES / f"{state.trace_id}.jsonl"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="trace not ready")
+    ok, bad = verify_file(path)
+    return {"ok": ok, "bad_seq": bad, "events": len(path.read_text(encoding="utf-8").splitlines())}
 
 
 @app.get("/api/tasks/{task_id}/trace.jsonl")
@@ -253,3 +332,19 @@ def index() -> FileResponse:
     if not page.exists():
         raise HTTPException(status_code=404, detail="web/index.html missing")
     return FileResponse(page)
+
+
+@app.get("/styles.css")
+def styles() -> FileResponse:
+    path = WEB / "styles.css"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="web/styles.css missing")
+    return FileResponse(path, media_type="text/css")
+
+
+@app.get("/app.js")
+def app_js() -> FileResponse:
+    path = WEB / "app.js"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="web/app.js missing")
+    return FileResponse(path, media_type="application/javascript")

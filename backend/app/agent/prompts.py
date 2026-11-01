@@ -15,10 +15,25 @@ Rules you must follow:
 4. Prefer small, verifiable steps: write a file, run it, read the real output.
 5. Do not fabricate results. Only report what the tools actually returned.
 6. Finish with a concise summary that includes the real stdout/exit codes you observed.
+
+Planning discipline (important for the live demo):
+- Step 1: inspect what is already in /workspace (list_dir) before writing anything.
+- Write the smallest program that proves the task, then run it and read its output.
+- One command per tool call; do not chain unrelated actions with `&&` or `;`.
+- If a command is denied by policy, treat the rule id + reason as authoritative.
+  Never send the denied command again in any form; pick the documented alternative.
+- If a command needs approval, wait for the human decision; on rejection, change approach.
+- Finish within 12 tool calls when possible. The summary must quote real output, not guesses.
 """
 
 USER_TEMPLATE = """Task:
 {task}
 
-Start by inspecting /workspace, then implement the task step by step.
+Work plan:
+1. List /workspace to see the starting point.
+2. Create the minimal files needed (write_file), then run them (run_command).
+3. Read/verify the real output before claiming success.
+4. If the task asks you to attempt something dangerous, do it once, observe the denial,
+   and continue without repeating it.
+5. Call finish with a summary that includes the actual stdout you saw.
 """

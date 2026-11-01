@@ -82,6 +82,43 @@ class AgentLoopTest(unittest.TestCase):
         self._run_demo()
         self.assertNotIn("tk_test", self.sandbox._tasks)
 
+    # --------------------------------------------- 宿主指纹 / 资源超限事件
+    def test_host_fingerprints_are_recorded(self) -> None:
+        self._run_demo()
+        events = self.trace.read()
+        created = next(e for e in events if e["event"] == "sandbox.created")
+        self.assertIn("host_fingerprint", created["payload"])
+        self.assertIn("source", created["payload"]["host_fingerprint"])
+
+        execs = [e for e in events if e["event"] == "sandbox.exec"]
+        self.assertTrue(execs)
+        for event in execs:
+            self.assertIn("host_before", event["exec"])
+            self.assertIn("host_after", event["exec"])
+
+    def test_timeout_emits_resource_limit_event(self) -> None:
+        from app.policy import ToolCall
+        from app.agent.mock_model import ScriptedModel
+
+        result = run_agent(
+            task="run a long sleep",
+            model=ScriptedModel([
+                ToolCall("c1", "run_command", {"command": "sleep 999", "timeout_s": 1}),
+                ToolCall("c2", "finish", {"summary": "done"}),
+            ]),
+            policy=self.policy,
+            sandbox=self.sandbox,
+            trace=self.trace,
+            task_id="tk_timeout",
+            approver=lambda decision, call: True,
+        )
+        self.assertEqual(result.status, "completed")
+        limits = [e for e in self.trace.read() if e["event"] == "resource.limit"]
+        self.assertTrue(limits)
+        self.assertEqual(limits[0]["payload"]["kind"], "wall_clock")
+        self.assertTrue(limits[0]["payload"]["timed_out"])
+        self.assertFalse(limits[0]["payload"]["oom"])
+
 
 if __name__ == "__main__":
     unittest.main()

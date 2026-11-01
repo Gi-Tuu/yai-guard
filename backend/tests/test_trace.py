@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from app.trace import TraceStore, new_trace_id  # noqa: E402
+from app.trace import TraceStore, new_trace_id, verify_file  # noqa: E402
 
 
 class TraceStoreTest(unittest.TestCase):
@@ -78,6 +78,25 @@ class TraceStoreTest(unittest.TestCase):
     def test_unknown_event_type_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             self.store.append(task_id="tk_1", actor="system", event="not.an.event", payload={})
+
+    # ----------------------------------------------- 独立文件校验（API 端点用）
+    def test_verify_file_matches_store_verify(self) -> None:
+        for _ in range(2):
+            self.store.append(task_id="tk_1", actor="system", event="agent.step", payload={"x": 1})
+        self.assertEqual(verify_file(self.path), (True, None))
+
+    def test_verify_file_missing_file(self) -> None:
+        self.assertEqual(verify_file(pathlib.Path(self.tmp.name) / "nope.jsonl"), (False, None))
+
+    def test_verify_file_detects_tampering(self) -> None:
+        for _ in range(2):
+            self.store.append(task_id="tk_1", actor="user", event="task.created", payload={"task": "x"})
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        first = json.loads(lines[0])
+        first["actor"] = "attacker"
+        lines[0] = json.dumps(first, sort_keys=True, separators=(",", ":"))
+        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.assertEqual(verify_file(self.path), (False, 1))
 
 
 if __name__ == "__main__":

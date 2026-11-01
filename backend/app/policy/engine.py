@@ -39,6 +39,9 @@ FILE_WRITE_TOOLS = {"write_file"}
 FILE_READ_TOOLS = {"read_file", "list_dir"}
 ROOTISH_TARGETS = {"/", "/*", "~", "$HOME", "/root", "/home", "/etc", "/usr", "/var", "/bin", "/sbin", "/proc", "/sys", "/dev"}
 SAFE_REDIRECT_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr"}
+# 只读类命令：任何绝对/越界路径参数都拒绝（它们没有理由跳出 /workspace）。
+READ_PATH_BINARIES = {"cat", "head", "tail", "grep", "sed", "awk", "find", "stat",
+                      "file", "du", "sha256sum", "ls"}
 
 
 class PolicyEngine:
@@ -182,6 +185,17 @@ class PolicyEngine:
                     return rm_decision
                 approval = approval or rm_decision
 
+            if exe in READ_PATH_BINARIES:
+                outside = self._outside_path_arg(argv)
+                if outside:
+                    return Decision(
+                        effect=Effect.DENY,
+                        rule_id="D-ARG-OUTSIDE",
+                        reason=f"path argument outside /workspace: {outside}",
+                        risk="high",
+                        suggestion="operate only on files inside /workspace",
+                    )
+
             if exe in {"python", "python3"} and shell_has_c(argv):
                 approval = approval or Decision(
                     Effect.REQUIRE_APPROVAL, "R-PYTHON-C",
@@ -261,6 +275,21 @@ class PolicyEngine:
             risk="low",
             matched=(normalized,),
         )
+
+    def _outside_path_arg(self, argv: list[str]) -> str | None:
+        """只读命令的路径参数必须在 /workspace 内（拒绝 /etc、..、~ 等跳界）。"""
+        for arg in argv[1:]:
+            if arg.startswith("-") and arg != "-":
+                continue
+            if not (arg.startswith("/") or arg.startswith("..") or arg.startswith("~")):
+                continue
+            try:
+                resolved = normalize_path(arg, self.workspace)
+            except ValueError as exc:
+                return f"{arg} ({exc})"
+            if not is_within(resolved, self.workspace):
+                return resolved
+        return None
 
     def _eval_rm(self, argv: list[str]) -> Decision:
         recursive, force, targets = parse_rm(argv)
