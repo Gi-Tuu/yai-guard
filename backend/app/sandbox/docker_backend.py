@@ -8,16 +8,134 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shlex
+import signal
 import subprocess
+import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .interface import ExecResult, Limits
 
 SANDBOX_IMAGE = "yaiguard/sandbox-py:1.0"
+
+
+@dataclass
+class BoundedResult:
+    stdout: bytes
+    stderr: bytes
+    exit_code: int
+    duration_ms: int
+    timed_out: bool
+    stdout_truncated: bool
+    stderr_truncated: bool
+    killed_reason: str | None
+
+    @property
+    def truncated(self) -> bool:
+        return self.stdout_truncated or self.stderr_truncated
+
+
+def _kill_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name != "nt":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:  # pragma: no cover - Windows CI
+            proc.kill()
+    except (OSError, ProcessLookupError):  # pragma: no cover
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def run_bounded(
+    args: list[str],
+    *,
+    timeout_s: float,
+    stdout_cap: int,
+    stderr_cap: int,
+    total_cap: int,
+) -> BoundedResult:
+    """有界流式执行：不会把无界输出读进宿主机内存。
+
+    为什么必须这样做：`subprocess.run(capture_output=True)` 会先把全部输出收进内存，
+    容器内存限制保护不了宿主机 Python 进程。这里用两个 reader 线程持续 drain，
+    只保留每路上限内的字节；总输出超过 total_cap 立即 kill 进程组。
+    """
+    started = time.monotonic()
+    kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+                    "stdin": subprocess.DEVNULL}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(args, **kwargs)
+
+    lock = threading.Lock()
+    totals = [0, 0]
+    buffers = [bytearray(), bytearray()]
+    exceeded = [False]
+
+    def reader(stream, index: int, cap: int) -> None:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            with lock:
+                totals[index] += len(chunk)
+                room = cap - len(buffers[index])
+                if room > 0:
+                    buffers[index].extend(chunk[:room])
+                overall = totals[0] + totals[1]
+            if overall > total_cap and not exceeded[0]:
+                exceeded[0] = True
+                _kill_process(proc)
+
+    threads = [
+        threading.Thread(target=reader, args=(proc.stdout, 0, stdout_cap), daemon=True),
+        threading.Thread(target=reader, args=(proc.stderr, 1, stderr_cap), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover
+            pass
+    for thread in threads:
+        thread.join(timeout=5)
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            stream.close()
+        except (AttributeError, OSError):  # pragma: no cover
+            pass
+
+    duration = int((time.monotonic() - started) * 1000)
+    stdout_truncated = totals[0] > stdout_cap
+    stderr_truncated = totals[1] > stderr_cap
+    any_truncated = stdout_truncated or stderr_truncated
+    reason = "output_limit" if (exceeded[0] or any_truncated) else ("wall_clock" if timed_out else None)
+    return BoundedResult(
+        stdout=bytes(buffers[0]),
+        stderr=bytes(buffers[1]),
+        exit_code=proc.returncode if proc.returncode is not None else 137,
+        duration_ms=duration,
+        timed_out=timed_out,
+        stdout_truncated=stdout_truncated or exceeded[0],
+        stderr_truncated=stderr_truncated or exceeded[0],
+        killed_reason=reason,
+    )
 
 
 def _now() -> str:
@@ -117,9 +235,60 @@ class DockerSandbox:
         self.docker_bin = docker_bin
         self._limits = Limits()
 
+    # --------------------------------------------------------------- readiness
+    def _safe_run(self, args: list[str], timeout: int = 20) -> tuple[int, str, str]:
+        """不抛异常的 docker 调用，用于健康检查/探测。"""
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return 127, "", f"{type(exc).__name__}: {exc}"
+
+    def daemon_status(self) -> dict:
+        """返回 daemon 是否可达、版本、可用 runtime。不依赖 docker SDK。"""
+        code, out, err = self._safe_run([self.docker_bin, "info", "--format",
+                                         "{{.ServerVersion}}|{{json .Runtimes}}"])
+        if code != 0:
+            return {"ok": False, "error": err[:400] or f"docker exited {code}",
+                    "version": None, "runtimes": []}
+        version, _, runtimes_raw = out.partition("|")
+        runtimes: list[str] = []
+        try:
+            runtimes = sorted(json.loads(runtimes_raw or "{}").keys())
+        except json.JSONDecodeError:
+            runtimes = []
+        return {"ok": True, "error": None, "version": version, "runtimes": runtimes}
+
+    def image_status(self, image: str | None = None) -> dict:
+        target = image or self.image
+        code, out, err = self._safe_run([self.docker_bin, "image", "inspect",
+                                         "--format", "{{.Id}}", target])
+        return {"ok": code == 0, "image": target,
+                "id": out[:64] if code == 0 else None,
+                "error": None if code == 0 else err[:300]}
+
+    def ensure_ready(self) -> dict:
+        """controller 启动/建容器前的前置检查：daemon、runtime、镜像。
+
+        失败必须显式抛错，绝不静默降级 runtime（P1-6 要求）。
+        """
+        daemon = self.daemon_status()
+        if not daemon["ok"]:
+            raise DockerError(f"docker daemon unreachable: {daemon['error']}")
+        runtime = self.runtime or "runc"
+        if runtime not in daemon["runtimes"]:
+            raise DockerError(
+                f"runtime {runtime!r} not available; daemon runtimes={daemon['runtimes']}"
+            )
+        image = self.image_status()
+        if not image["ok"]:
+            raise DockerError(f"sandbox image missing: {image['error']}")
+        return {"daemon": daemon, "runtime": runtime, "image": image}
+
     # ------------------------------------------------------------- lifecycle
     def create(self, task_id: str, limits: Limits) -> None:
         self._limits = limits
+        self.ensure_ready()
         args = build_run_args(task_id, limits, image=self.image, runtime=self.runtime, network=self.network)
         result = subprocess.run(args, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
@@ -156,20 +325,34 @@ class DockerSandbox:
     def exec(self, task_id: str, command: str, *, timeout_s: int | None = None,
              cwd: str = "/workspace") -> ExecResult:
         limit = timeout_s or self._limits.timeout_s
-        started = time.monotonic()
         args = [self.docker_bin, "exec", "-w", cwd, f"yaig-{task_id}", "sh", "-lc", command]
-        try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=limit)
-            duration = int((time.monotonic() - started) * 1000)
-            stdout, truncated = _truncate(result.stdout, self._limits.max_output_bytes)
-            stderr, _ = _truncate(result.stderr, self._limits.max_output_bytes)
-            return ExecResult(stdout=stdout, stderr=stderr, exit_code=result.returncode,
-                              duration_ms=duration, truncated=truncated)
-        except subprocess.TimeoutExpired:
-            subprocess.run([self.docker_bin, "kill", f"yaig-{task_id}"], capture_output=True, timeout=20)
-            return ExecResult(stderr=f"timeout after {limit}s", exit_code=124,
-                              duration_ms=int((time.monotonic() - started) * 1000),
-                              timed_out=True, killed_reason="wall_clock")
+        result = run_bounded(
+            args,
+            timeout_s=limit,
+            stdout_cap=self._limits.max_output_bytes,
+            stderr_cap=self._limits.max_output_bytes,
+            total_cap=self._limits.max_total_output_bytes,
+        )
+        if result.timed_out or result.killed_reason == "output_limit":
+            # 杀掉容器，确保 docker exec 的远端进程不会留在里面继续消耗资源。
+            subprocess.run([self.docker_bin, "kill", f"yaig-{task_id}"],
+                           capture_output=True, timeout=20)
+
+        stdout = result.stdout.decode("utf-8", "replace")
+        stderr = result.stderr.decode("utf-8", "replace")
+        if result.stdout_truncated:
+            stdout += "\n...[truncated]"
+        if result.stderr_truncated:
+            stderr += "\n...[truncated]"
+        return ExecResult(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+            timed_out=result.timed_out,
+            truncated=result.truncated,
+            killed_reason=result.killed_reason,
+        )
 
     def host_fingerprint(self) -> dict:
         try:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import pathlib
 import subprocess
 import sys
@@ -49,6 +50,8 @@ def _image_available() -> bool:
 DOCKER = _docker_available()
 IMAGE_READY = _image_available()
 SKIP_REASON = "docker daemon unavailable" if not DOCKER else f"image {IMAGE} not built"
+if os.environ.get("REQUIRE_DOCKER_TESTS") == "1" and not IMAGE_READY:
+    raise RuntimeError(f"REQUIRE_DOCKER_TESTS=1 but Docker/image unavailable: {SKIP_REASON}")
 
 
 @unittest.skipUnless(IMAGE_READY, SKIP_REASON)

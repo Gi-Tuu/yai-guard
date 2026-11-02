@@ -5,9 +5,9 @@
 > 公开仓库：**https://github.com/Gi-Tuu/yai-guard** ｜ License: MIT
 > [![CI](https://github.com/Gi-Tuu/yai-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Gi-Tuu/yai-guard/actions/workflows/ci.yml)
 
-**当前状态（2026-11-01）：技术预研完成 + 骨架 + 波次 1 工单落地。**
-策略引擎、审计 trace、Agent 循环、Web/API、沙箱抽象与部署文件已实现；**72 个单测全绿**（含 4 个真实 Docker 集成测试），离线演示与真实 Docker 端到端演示的哈希链校验通过；本地已构建沙箱镜像并实测 M1/M2/M3 containment。
-**未部署任何收费资源、未调用真实推理 API、未修改 YAI 主仓库。**
+**当前状态（2026-11-02，分支 `harden/round1`）：预研 + 骨架 + 第一轮安全加固。**
+**101 个测试在启用 `REQUIRE_API_TESTS=1 / REQUIRE_DOCKER_TESTS=1` 时全部实际执行（0 skipped）**；Controller 已用真实 Docker 验证 create/exec/destroy、只读根、零网络、超时与 0 残留；API 统一鉴权、严格布尔审批、有界输出、Trace 锚点/HMAC 校验均已落地。
+**未部署任何收费资源、未调用真实推理 API、未修改 YAI 主仓库；改动尚未合并到 main。**
 
 ---
 
@@ -38,7 +38,7 @@ docker build -f backend/Dockerfile -t yaiguard/app:0.1 .
 docker run --rm yaiguard/app:0.1 python -c "from app.main import app; print(app.title)"
 
 # 6) 本地 Web（需要 pip install -r backend/requirements.txt）
-cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
+cd backend && ALLOW_ANONYMOUS=1 MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 ```
 
 演示会打印：`allow → deny(rm -rf /) → approval → deny(curl|sh) → finish`，并生成 `artifacts/demo-trace.jsonl`（`demo_docker.py` 生成 `artifacts/e2e-docker/trace.jsonl`，可用 `verify()` 验证未被篡改）。`smoke_demo.py` 会自动启动 API、批准一次审批并断言 7 项检查全 PASS。
@@ -87,7 +87,7 @@ cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 |---|---|---|
 | 1 | **只做 Pattern A**（终端 + 文件执行） | 浏览器自动化（Pattern B）会把 5 天工作量翻倍；赛题允许 "one or both" |
 | 2 | **单 Agent 循环**，不做多 Agent | 可预测、可调试、演示稳定；与安全主线无关的复杂度全部砍掉 |
-| 3 | **Docker hardened 基线 + gVisor `runsc` 默认强化档**（失败自动回切 `runc`） | 不把交付押在未验证的 `/dev/kvm` 上；gVisor systrap 不需要 KVM |
+| 3 | **Docker hardened + `runc`（已实测）**；gVisor `runsc` 仅预留（未实测，**不自动降级**） | 不把交付押在未验证的 runtime 上；显式设置 `runsc` 但不可用时 controller 启动失败，而不是静默换 runc |
 | 4 | **双 VM**：`yai-app`（密钥/编排/审计）+ `yai-sandbox`（唯一执行面，零密钥） | 两台 2c4g 与单台 4c8g 同价，等于白送网络边界；沙箱机可整机销毁 |
 | 5 | **所有 LLM 调用走 Vultr Serverless Inference** | 赛事强制；主模型 `deepseek-v4.1-flash-1017`（1M ctx、tool calling、$0.15/$0.60 per 1M） |
 | 6 | **策略引擎确定性，不交给 LLM** | 命令过滤可绕过，真正的保证是容器边界；策略负责 UX 拦截与审批 |
@@ -114,6 +114,8 @@ cd backend && MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
 | 10 | [`docs/09-派单与并行开发计划.md`](docs/09-派单与并行开发计划.md) | 8 张可派工单、依赖图、冲突矩阵、验收总表 |
 | 11 | [`docs/10-Kickoff执行手册.md`](docs/10-Kickoff执行手册.md) | 11-03 23:00 起 3 小时上线的逐条命令与降级路径 |
 | 12 | [`docs/11-Credits领取手册.md`](docs/11-Credits领取手册.md) | $200 credits 的领取时点、兑换路径、前置条件、失败处理 |
+| 13 | [`docs/12-安全加固修复报告.md`](docs/12-安全加固修复报告.md) | 第一轮 P0/P1 修复、关键决策、回滚路径、剩余风险 |
+| 14 | [`docs/13-测试与证据报告.md`](docs/13-测试与证据报告.md) | 101 项测试矩阵、证据清单、BLOCKED/NOT RUN 说明 |
 | 11 | [`docs/evidence/`](docs/evidence/) | 波次 1 实测证据：containment、策略红队、API 加固、推理接入状态 |
 
 证据台账（每条事实附 URL + 访问日期 + 原文摘录）：

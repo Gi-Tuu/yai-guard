@@ -12,6 +12,7 @@ from typing import Any
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi.responses import JSONResponse
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("fastapi is required to run the sandbox controller") from exc
 
@@ -22,8 +23,15 @@ app = FastAPI(title="YAI Guard Sandbox Controller", version="0.1.0")
 
 _TOKEN = os.environ.get("SANDBOX_TOKEN", "")
 _IMAGE = os.environ.get("SANDBOX_IMAGE", "yaiguard/sandbox-py:1.0")
-_RUNTIME = os.environ.get("SANDBOX_RUNTIME") or None
+_RUNTIME = os.environ.get("SANDBOX_RUNTIME") or "runc"
 _backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
+
+# 启动即检查 daemon / runtime / 镜像；失败时 /healthz 返回 503，且 create 会显式报错。
+# 绝不静默把 runsc 降级成 runc（P1-6）。
+try:
+    _STARTUP: dict[str, Any] = {"ok": True, **_backend.ensure_ready()}
+except Exception as exc:  # noqa: BLE001 - 启动失败要作为状态暴露，而不是 crash loop
+    _STARTUP = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _auth(token: str | None) -> None:
@@ -32,8 +40,16 @@ def _auth(token: str | None) -> None:
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, Any]:
-    return {"ok": True, "runtime": _RUNTIME or "runc", "image": _IMAGE}
+def healthz() -> JSONResponse:
+    payload: dict[str, Any] = {
+        "ok": bool(_STARTUP.get("ok")),
+        "runtime": _RUNTIME,
+        "image": _IMAGE,
+        "daemon": _STARTUP.get("daemon"),
+        "image_status": _STARTUP.get("image"),
+        "error": _STARTUP.get("error"),
+    }
+    return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
 
 @app.get("/v1/host/snapshot")
@@ -58,6 +74,7 @@ def create(task_id: str, limits: dict[str, Any] | None = None,
         nofile=int(data.get("nofile", 512)),
         timeout_s=int(data.get("timeout_s", 120)),
         max_output_bytes=int(data.get("max_output_bytes", 8192)),
+        max_total_output_bytes=int(data.get("max_total_output_bytes", 1_048_576)),
     )
     _backend.create(task_id, parsed)
     return {"ok": True, "task_id": task_id, "limits": parsed.to_dict()}

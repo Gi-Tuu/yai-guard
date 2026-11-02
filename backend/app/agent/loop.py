@@ -230,4 +230,5 @@ def _limits_from(policy: PolicyEngine):
         nofile=int(limits.get("nofile", 512)),
         timeout_s=int(limits.get("command_timeout_s", 120)),
         max_output_bytes=int(limits.get("max_output_bytes", 8192)),
+        max_total_output_bytes=int(limits.get("max_total_output_bytes", 1_048_576)),
     )

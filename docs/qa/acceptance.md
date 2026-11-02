@@ -67,9 +67,27 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 2. Windows 本地无法运行 `.sh` 取证脚本（MSYS 的 `/etc`、`df -i` 语义不同），已用 PowerShell 等价项替代并注明。
 3. 策略对 `python3 main.py` 的脚本内容不做静态分析；容器边界是唯一保证。
 4. 单进程内存限流/并发：uvicorn 多 worker 时失效；演示期固定单进程。
-5. `docs/08` 的数字与状态已在 2026-11-01 复核时更新为 v0.2（72 测试 / API 已加固 / Docker E2E）；如与证据文件冲突，以 `docs/evidence/` 为准。
+5. `docs/08` 的数字与状态已在 2026-11-02 安全加固轮更新（101 测试 / 统一鉴权 / 严格审批 / 有界输出 / Trace 锚点）；如与证据文件冲突，以 `docs/evidence/` 为准。
 
-## 5. 提交前必须再做一次
+## 5. 第一轮安全加固验收（2026-11-02，分支 `harden/round1`）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| P0-1 Controller Docker 环境 | **PASS** | [P0-1 证据](../evidence/P0-1-controller-docker.md) |
+| P0-2 真实执行闭环 | **PASS** | controller 集成 4/4 + `smoke_demo.py` |
+| P1-1 审批严格布尔 | **PASS** | `test_api.py`（true/false/字符串/数字/缺失/重复） |
+| P1-2 统一鉴权（任务/SSE/trace） | **PASS** | `test_api.py` 401/404/200 矩阵 |
+| P1-3 输出硬性限额 | **PASS** | [P1-3 证据](../evidence/P1-3-bounded-output.md) |
+| P1-4 Trace 完整性 | **PASS** | `test_trace.py` 链/序号/终止/锚点/HMAC |
+| P1-5 CI 分层 | **PASS** | 本地 101 tests 0 skipped + GitHub Actions run `41477550680` 四 job 全绿 |
+| P1-6 gVisor/runc 一致性 | **PASS（文档+实现）** | [P1-6 证据](../evidence/P1-6-runtime-status.md) |
+| 真实 Vultr 双 VM | **BLOCKED** | 需 credits 与授权 |
+| gVisor 实测 | **NOT RUN** | 宿主无 runsc |
+| 视频录制 / 提交 | **NOT RUN / BLOCKED** | 未录；11-03 后开放 |
+
+> 详细修复说明见 [`docs/12`](../12-安全加固修复报告.md)，测试矩阵见 [`docs/13`](../13-测试与证据报告.md)。
+
+## 6. 提交前必须再做一次
 
 ```bash
 python scripts/verify_submission.py

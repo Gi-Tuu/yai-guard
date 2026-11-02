@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from app.trace import TraceStore, new_trace_id, verify_file  # noqa: E402
+from app.trace.store import verify_trace_file  # noqa: E402
 
 
 class TraceStoreTest(unittest.TestCase):
@@ -97,6 +98,95 @@ class TraceStoreTest(unittest.TestCase):
         lines[0] = json.dumps(first, sort_keys=True, separators=(",", ":"))
         self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.assertEqual(verify_file(self.path), (False, 1))
+
+
+class TraceIntegrityTest(unittest.TestCase):
+    """P1-4：区分 chain / sequence / completeness / anchor / HMAC。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        self.trace = self.dir / "trace.jsonl"
+        self.anchor = self.dir / "trace.anchor.json"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _make(self, *, completed: bool = True, anchor: bool = True, hmac_key: str = "k"):
+        store = TraceStore(self.trace, "tr_integrity")
+        store.append(task_id="tk", actor="system", event="task.created", payload={})
+        if completed:
+            store.append(task_id="tk", actor="agent", event="task.completed", payload={})
+        store.append(task_id="tk", actor="system", event="sandbox.destroyed", payload={})
+        if anchor:
+            store.seal(self.anchor, hmac_key=hmac_key)
+        return store
+
+    def test_valid_complete_trace(self) -> None:
+        self._make()
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["chain_ok"])
+        self.assertTrue(result["sequence_ok"])
+        self.assertTrue(result["completeness_ok"])
+        self.assertTrue(result["anchor_ok"])
+        self.assertTrue(result["authentic"])
+
+    def test_empty_file_is_invalid(self) -> None:
+        self.trace.write_text("", encoding="utf-8")
+        result = verify_trace_file(self.trace)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "empty")
+
+    def test_deleted_last_event_fails_completeness_and_anchor(self) -> None:
+        self._make()
+        lines = self.trace.read_text(encoding="utf-8").splitlines()
+        self.trace.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["completeness_ok"])
+        self.assertFalse(result["anchor_ok"])
+
+    def test_missing_terminal_event_fails_completeness(self) -> None:
+        self._make(completed=False)
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k")
+        self.assertTrue(result["chain_ok"])
+        self.assertTrue(result["sequence_ok"])
+        self.assertFalse(result["completeness_ok"])
+        self.assertFalse(result["ok"])
+
+    def test_sequence_gap_is_detected(self) -> None:
+        self._make()
+        lines = self.trace.read_text(encoding="utf-8").splitlines()
+        second = json.loads(lines[1])
+        second["seq"] = 99
+        lines[1] = json.dumps(second, sort_keys=True, separators=(",", ":"))
+        self.trace.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = verify_trace_file(self.trace)
+        self.assertFalse(result["sequence_ok"])
+        self.assertFalse(result["ok"])
+
+    def test_anchor_mismatch_after_append(self) -> None:
+        store = self._make()
+        store.append(task_id="tk", actor="system", event="agent.step", payload={})
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k")
+        self.assertTrue(result["chain_ok"])
+        self.assertFalse(result["anchor_ok"])
+        self.assertFalse(result["ok"])
+
+    def test_hmac_tamper_is_detected(self) -> None:
+        self._make()
+        anchor = json.loads(self.anchor.read_text(encoding="utf-8"))
+        anchor["hmac"] = "0" * 64
+        self.anchor.write_text(json.dumps(anchor), encoding="utf-8")
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k")
+        self.assertFalse(result["authentic"])
+        self.assertFalse(result["ok"])
 
 
 if __name__ == "__main__":
