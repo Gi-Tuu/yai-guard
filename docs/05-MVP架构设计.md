@@ -74,7 +74,7 @@ flowchart TB
 | Model Adapter | 封装 Vultr Inference：chat/tools/stream、超时、重试、token 计数 | 不提供其他 provider | openai SDK，`base_url` 写死 |
 | Policy Engine | 对每个工具调用做确定性裁决：allow / deny(rule_id) / require_approval | 不执行、不改写命令 | Python + YAML 规则，纯函数 `evaluate(call, ctx) -> Decision` |
 | Sandbox Controller | **部署在 sandbox VM**，唯一持有 Docker 权限的服务：创建/执行/读写文件/销毁；执行超时与输出截断 | 不接受任意镜像、不接受宿主路径、不持有任何 LLM 密钥 | FastAPI（仅监听 VPC 私网 :9000 + 共享 token）+ docker SDK |
-| Sandbox | 真实执行环境：非特权、只读 rootfs、workspace 可写、无宿主挂载、无凭证 | 不访问宿主、不访问控制面内网 | Docker + 加固参数；`runtime=runsc`（默认档，若 Day-0 通过）或 `runc` |
+| Sandbox | 真实执行环境：非特权、只读 rootfs、workspace 可写、无宿主挂载、无凭证 | 不访问宿主、不访问控制面内网 | Docker + 加固参数；当前 `runc` 已实测，`runsc` 未实测（显式设置且 daemon 无该 runtime 则 controller 启动失败） |
 | Egress Proxy | 依赖安装阶段的白名单出口；默认拒绝其他域名 | 不转发任意流量 | Squid（CONNECT 域名白名单） |
 | Trace Store | 追加写事件流、按 task 回放、导出 JSONL/JSON | 不允许原地修改 | SQLite 表 + 每任务 JSONL 文件 + 可选哈希链 |
 
@@ -152,7 +152,7 @@ class SandboxBackend(Protocol):
 ```
 
 - `ExecResult`: `stdout, stderr, exit_code, duration_ms, timed_out, truncated, killed_reason`
-- 后端实现 1（P0）：`DockerBackend(runtime=...)`（加固参数见 `04`）。启动时探测 `runsc`：可用则 `runtime="runsc"`（默认档），否则 `runtime="runc"` 并在 trace 标注 `runtime_fallback`；单任务失败可按 trace 降级重试一次。
+- 后端实现 1（P0）：`DockerBackend(runtime=...)`（加固参数见 `04`）。当前默认 `runc`；若显式请求 `runsc` 而 daemon 未注册该 runtime，controller 启动检查直接失败（不自动降级）。
 - 后端实现 2（P2）：`MicrosandboxBackend` / `VultrInstanceBackend`（每任务一次性实例，需 KVM/Vultr API）。
 
 > 这样即使 gVisor 在 Vultr 上验证失败，只需换实现，不动上层。
@@ -403,6 +403,6 @@ Internet ──443──► yai-app (2 vCPU / 4 GB) ──VPC 10.99.0.0/24:9000�
 | ADR-03 | 策略引擎确定性、独立于 LLM | 让 LLM 自审 | 安全边界不能交给概率模型 |
 | ADR-04 | Sandbox Controller 独占运行时权限，且**部署在独立 sandbox VM** | app 直接调 Docker / 同机 Controller | 把"被注入后的最大爆炸半径"压到一台无密钥的一次性机器 |
 | ADR-05 | 默认无网络 + 白名单代理 | 全网络 | 依赖安装与数据外泄是主要风险面 |
-| ADR-06 | 容器为主，gVisor 为默认强化档，microVM 为 Plan B | 直接上 microVM | 交付确定性优先；后端抽象保证可替换 |
+| ADR-06 | 当前唯一已验证运行时为 Docker + `runc`；gVisor `runsc` 仅预留且不自动降级，microVM 为 Plan B | 直接上 microVM | 交付确定性优先；未实测能力不得写成默认能力 |
 | ADR-07 | trace 追加写 + 哈希链 | 普通日志 | 可验证性是本项目的差异化卖点 |
 | ADR-08 | 双 VM 部署（VPC 私网） | 单 VM | 同价换网络边界 + 凭证隔离 + 整机可销毁；单 VM 仅作当晚降级 |
