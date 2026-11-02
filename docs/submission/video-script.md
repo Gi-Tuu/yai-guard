@@ -84,7 +84,7 @@
 
 **结尾字幕**：
 > *Autonomy Without Uncontrolled Access.*
-> github.com/&lt;repo&gt; · &lt;demo-url&gt;
+> github.com/Gi-Tuu/yai-guard · &lt;demo-url&gt;
 
 ---
 

@@ -88,7 +88,7 @@ docker run --rm hello-world
 
 ```bash
 sudo mkdir -p /opt/yai-guard && sudo chown $USER:$USER /opt/yai-guard
-git clone <你的公开仓库> /opt/yai-guard && cd /opt/yai-guard
+git clone https://github.com/Gi-Tuu/yai-guard.git /opt/yai-guard && cd /opt/yai-guard
 
 # 沙箱镜像（构建需要外网；运行期不需要）
 docker build -f deploy/sandbox/Dockerfile -t yaiguard/sandbox-py:1.0 .

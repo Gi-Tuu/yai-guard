@@ -43,22 +43,23 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 | 11 | API 401 / 429 / 并发 429 / 校验端点 | PASS | [WO-06](../evidence/WO-06-audit-api.md) |
 | 12 | UI：时间线 / 审批 / trace 校验 / 宿主面板 | PASS | 浏览器实测：D-RM-ROOT 红色高亮、Approve 后 completed、校验 `OK · 30 events` |
 | 13 | 提交文案字符限制 | PASS | 标题 47/50，短描述 234/255，长描述 164 words |
-| 14 | 文档链接完整 | PASS | 33 个 markdown 文件 |
+| 14 | 文档链接完整 | PASS | 36 个 markdown 文件 |
 | 15 | 演示路径冒烟（docker 直连 + remote controller 两种模式） | PASS | `scripts/smoke_demo.py`：两种模式均 30 事件 / 7 项检查全 PASS |
 | 16 | 控制面镜像 + 部署配置校验 | PASS | [镜像冒烟](../evidence/app-image-smoke-2026-11-01.md) + [Caddy/compose 校验](../evidence/deploy-config-validation-2026-11-01.md) |
+| 17 | 公开 GitHub 仓库 | PASS | https://github.com/Gi-Tuu/yai-guard（PUBLIC，main 已推送） |
 
 ## 3. 阻塞与待办
 
 | # | 项 | 状态 | 原因 / 下一步 | owner |
 |---|---|---|---|---|
-| 17 | Vultr 双 VM + VPC + TLS + 防火墙 | **BLOCKED** | 需 11-03 kickoff 后才能领 $200 credits；代码/文件已就绪 | WO-04 |
-| 18 | 公网 HTTPS Demo 无痕可打开 | **BLOCKED** | 依赖 #17 | WO-04 |
-| 19 | 真实 DeepSeek tool-calling 收敛 | **PENDING** | 无真实 key；Day-0 清单见 [WO-02](../evidence/WO-02-inference.md) §3 | WO-02 |
-| 20 | 云端宿主 `df -i` / `/etc` 对比 | **PENDING** | 依赖 #17；脚本已就绪 | WO-01 |
-| 21 | gVisor `runsc` 兼容性 | **PENDING** | 本机无 runsc；Day-1 探测 | WO-01 |
-| 22 | 视频 ≤5:00 / ≤300MB | **PENDING** | 脚本已写好，未录制 | WO-07 |
-| 23 | slides / cover image | **PASS** | `YAI-Guard-slides.pptx`（12 页、含 notes）+ `cover.png`（1920×1080）已生成 | WO-07 |
-| 24 | lablab 表单提交 | **BLOCKED** | 报名窗口 11-03 开放 | Lead |
+| 18 | Vultr 双 VM + VPC + TLS + 防火墙 | **BLOCKED** | 需 11-03 kickoff 后才能领 $200 credits；代码/文件已就绪 | WO-04 |
+| 19 | 公网 HTTPS Demo 无痕可打开 | **BLOCKED** | 依赖 #18 | WO-04 |
+| 20 | 真实 DeepSeek tool-calling 收敛 | **PENDING** | 无真实 key；Day-0 清单见 [WO-02](../evidence/WO-02-inference.md) §3 | WO-02 |
+| 21 | 云端宿主 `df -i` / `/etc` 对比 | **PENDING** | 依赖 #18；脚本已就绪 | WO-01 |
+| 22 | gVisor `runsc` 兼容性 | **PENDING** | 本机无 runsc；Day-1 探测 | WO-01 |
+| 23 | 视频 ≤5:00 / ≤300MB | **PENDING** | 脚本已写好，未录制 | WO-07 |
+| 24 | slides / cover image | **PASS** | `YAI-Guard-slides.pptx`（12 页、含 notes）+ `cover.png`（1920×1080）已生成 | WO-07 |
+| 25 | lablab 表单提交 | **BLOCKED** | 报名窗口 11-03 开放 | Lead |
 
 ## 4. 本轮未修的问题（记录，不掩盖）
 

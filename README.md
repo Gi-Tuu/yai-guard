@@ -2,6 +2,7 @@
 
 > **Secure Autonomous Execution Agent** — 让 AI 自主执行真实任务，同时让爆炸半径可控。
 > 参赛项目：**Vultr Agent Rush Hackathon · Challenge 1「Blast Radius Zero」**（线上 2026-11-03 – 11-08）
+> 公开仓库：**https://github.com/Gi-Tuu/yai-guard** ｜ License: MIT
 
 **当前状态（2026-11-01）：技术预研完成 + 骨架 + 波次 1 工单落地。**
 策略引擎、审计 trace、Agent 循环、Web/API、沙箱抽象与部署文件已实现；**72 个单测全绿**（含 4 个真实 Docker 集成测试），离线演示与真实 Docker 端到端演示的哈希链校验通过；本地已构建沙箱镜像并实测 M1/M2/M3 containment。
