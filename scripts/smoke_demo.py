@@ -72,7 +72,8 @@ def _stream_and_approve(task_id: str, timeout_s: float = 120.0) -> list[dict]:
     events: list[dict] = []
     deadline = time.monotonic() + timeout_s
     request = urllib.request.Request(BASE + f"/api/tasks/{task_id}/events",
-                                     headers={"Accept": "text/event-stream"})
+                                     headers={"Accept": "text/event-stream",
+                                              "X-Demo-Token": TOKEN})
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         for raw in response:
             if time.monotonic() > deadline:

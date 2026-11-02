@@ -134,40 +134,71 @@
   }
 
   // --------------------------------------------------------------------- SSE
-  function connect() {
-    const source = new EventSource(`/api/tasks/${state.taskId}/events`);
-    state.source = source;
-
-    source.onmessage = (msg) => {
-      let ev;
-      try { ev = JSON.parse(msg.data); } catch (e) { return; }
-      const key = ev.seq != null ? 's' + ev.seq : fmt(ev).slice(0, 120);
-      if (state.seen.has(key)) return; // 断线重连会重放，按 seq 去重
-      state.seen.add(key);
-      state.events.push(ev);
-      addEvent(ev);
-      $('timeline-count').textContent = state.events.length + ' events';
-      renderHost();
-    };
-
-    source.onerror = () => {
-      if (state.running) setStatus('reconnecting…', 'running');
-    };
-
-    source.addEventListener('done', async () => {
-      source.close();
-      state.source = null;
-      state.running = false;
-      $('submit').disabled = false;
-      $('demo').disabled = false;
-      const info = await fetch(`/api/tasks/${state.taskId}`).then((r) => r.json()).catch(() => null);
-      if (info) {
-        setStatus(`${info.status} · ${info.summary || info.error || ''}`, info.status);
-      } else {
-        setStatus('completed', 'completed');
+  // 用 fetch + ReadableStream 而不是 EventSource：EventSource 不能带自定义 header，
+  // 统一鉴权后必须用 X-Demo-Token，避免把 token 放进 URL/日志。
+  async function connect() {
+    const controller = new AbortController();
+    state.source = { close: () => controller.abort() };
+    try {
+      const res = await fetch(`/api/tasks/${state.taskId}/events`, {
+        headers: tokenHeader(),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        setStatus('stream unauthorized (HTTP ' + res.status + ')', 'failed');
+        state.running = false;
+        $('submit').disabled = false;
+        $('demo').disabled = false;
+        return;
       }
-      loadTrace();
-    });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop();
+        for (const chunk of chunks) {
+          if (!chunk || chunk.startsWith(':')) continue;
+          let eventName = 'message';
+          let data = '';
+          for (const line of chunk.split('\n')) {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          }
+          if (eventName === 'done') { await finishRun(); return; }
+          let ev;
+          try { ev = JSON.parse(data); } catch (e) { continue; }
+          const key = ev.seq != null ? 's' + ev.seq : fmt(ev).slice(0, 120);
+          if (state.seen.has(key)) continue;
+          state.seen.add(key);
+          state.events.push(ev);
+          addEvent(ev);
+          $('timeline-count').textContent = state.events.length + ' events';
+          renderHost();
+        }
+      }
+      if (state.running) await finishRun();
+    } catch (err) {
+      if (state.running) setStatus('stream error: ' + (err.message || err), 'failed');
+    }
+  }
+
+  async function finishRun() {
+    if (state.source) { state.source.close(); state.source = null; }
+    state.running = false;
+    $('submit').disabled = false;
+    $('demo').disabled = false;
+    const info = await fetch(`/api/tasks/${state.taskId}`, { headers: tokenHeader() })
+      .then((r) => r.json()).catch(() => null);
+    if (info) {
+      setStatus(`${info.status} · ${info.summary || info.error || ''}`, info.status);
+    } else {
+      setStatus('completed', 'completed');
+    }
+    loadTrace();
   }
 
   // ---------------------------------------------------------------- timeline
@@ -414,17 +445,22 @@
 
   // ------------------------------------------------------------------ trace
   $('trace-load').onclick = loadTrace;
-  $('trace-download').onclick = () => {
+  $('trace-download').onclick = async () => {
     if (!state.taskId) return;
+    const res = await fetch(`/api/tasks/${state.taskId}/trace.jsonl`, { headers: tokenHeader() });
+    if (!res.ok) { setHint('trace download failed: HTTP ' + res.status, true); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = `/api/tasks/${state.taskId}/trace.jsonl`;
+    link.href = url;
     link.download = `${state.taskId}-trace.jsonl`;
     link.click();
+    URL.revokeObjectURL(url);
   };
 
   async function loadTrace() {
     if (!state.taskId) return;
-    const res = await fetch(`/api/tasks/${state.taskId}/trace.jsonl`);
+    const res = await fetch(`/api/tasks/${state.taskId}/trace.jsonl`, { headers: tokenHeader() });
     if (!res.ok) {
       $('trace-meta').textContent = 'trace 不可用（HTTP ' + res.status + '）';
       return;
@@ -457,7 +493,7 @@
     el.textContent = '校验中…';
     el.className = 'badge wait';
     try {
-      const res = await fetch(`/api/tasks/${state.taskId}/trace/verify`);
+      const res = await fetch(`/api/tasks/${state.taskId}/trace/verify`, { headers: tokenHeader() });
       const body = await res.json();
       if (res.ok && body.ok) {
         el.textContent = 'OK · ' + body.events + ' events';

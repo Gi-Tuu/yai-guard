@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi import Depends, FastAPI, Header, HTTPException, Request
     from fastapi.responses import FileResponse, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("fastapi is required to run the API") from exc
@@ -38,7 +39,7 @@ from app.agent.loop import run_agent
 from app.agent.mock_model import MockModel
 from app.policy import Decision, EvalContext, PolicyEngine, ToolCall
 from app.sandbox.fake_backend import FakeSandbox
-from app.trace import TraceStore, new_trace_id, verify_file
+from app.trace import TraceStore, new_trace_id, verify_trace_file
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -64,6 +65,7 @@ class TaskState:
     task_id: str
     trace_id: str
     task: str
+    owner: str = "anonymous"
     status: str = "queued"
     summary: str = ""
     error: str | None = None
@@ -79,13 +81,47 @@ _TASK_SLOT = threading.BoundedSemaphore(1)
 _RATE_LOCK = threading.Lock()
 _RATE_HITS: dict[str, list[float]] = {}
 RATE_WINDOW_S = 60.0
+_MISSING = object()
 
 
-def _require_demo_token(token: str | None) -> None:
-    """DEMO_TOKEN 未设置时不鉴权（本地开发）；设置了就必须带 X-Demo-Token。"""
-    expected = os.environ.get("DEMO_TOKEN", "")
-    if expected and not secrets.compare_digest(token or "", expected):
-        raise HTTPException(status_code=401, detail="missing or invalid X-Demo-Token")
+def _configured_tokens() -> set[str]:
+    raw = os.environ.get("DEMO_TOKENS") or os.environ.get("DEMO_TOKEN") or ""
+    return {token.strip() for token in raw.split(",") if token.strip()}
+
+
+def _principal_id(token: str) -> str:
+    """不把原始 token 存进任务状态/日志，只存稳定短 ID。"""
+    return "u_" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _require_principal(x_demo_token: str | None = Header(default=None)) -> str:
+    """统一鉴权依赖：除 /healthz、/api/policy 与静态资源外，全部任务接口都走它。
+
+    生产模式（APP_ENV=production）没有配置 token 时在 import 阶段直接失败；
+    开发/测试必须显式 ALLOW_ANONYMOUS=1 才能匿名，避免“忘记配 token 就公网裸奔”。
+    """
+    tokens = _configured_tokens()
+    if not tokens:
+        if os.environ.get("ALLOW_ANONYMOUS") == "1":
+            return "anonymous"
+        raise HTTPException(status_code=503, detail="server auth is not configured")
+    if x_demo_token:
+        for token in tokens:
+            if secrets.compare_digest(x_demo_token, token):
+                return _principal_id(token)
+    raise HTTPException(status_code=401, detail="missing or invalid X-Demo-Token")
+
+
+def _owned_task(task_id: str, principal: str) -> TaskState:
+    """任务不存在与无权访问都返回 404，避免通过状态码枚举别人的任务。"""
+    state = TASKS.get(task_id)
+    if state is None or state.owner != principal:
+        raise HTTPException(status_code=404, detail="task not found")
+    return state
+
+
+if os.environ.get("APP_ENV") == "production" and not _configured_tokens():
+    raise RuntimeError("APP_ENV=production requires DEMO_TOKEN or DEMO_TOKENS")
 
 
 def _rate_limit_per_min() -> int:
@@ -145,17 +181,23 @@ def _build_model():
 
 
 # ------------------------------------------------------------------- approvals
-def _approver(task_id: str):
+def _approver(task_id: str, owner: str):
     def approve(decision: Decision, call: ToolCall) -> bool:
         key = (task_id, call.id)
         gate = threading.Event()
         with _LOCK:
-            PENDING[key] = {"decision": decision.to_dict(), "call": {"name": call.name, "arguments": call.arguments},
-                            "event": gate, "approved": False}
+            PENDING[key] = {
+                "decision": decision.to_dict(),
+                "call": {"name": call.name, "arguments": call.arguments},
+                "event": gate,
+                "approved": False,
+                "resolved": False,
+                "owner": owner,
+            }
         gate.wait(timeout=POLICY.approval_ttl)
         with _LOCK:
             record = PENDING.pop(key, {"approved": False})
-        return bool(record.get("approved"))
+        return record.get("approved") is True
 
     return approve
 
@@ -178,7 +220,7 @@ def _run_task(state: TaskState) -> None:
             sandbox=sandbox,
             trace=trace,
             task_id=state.task_id,
-            approver=_approver(state.task_id),
+            approver=_approver(state.task_id, state.owner),
             emit=state.events.append,
         )
         state.status = result.status
@@ -198,6 +240,13 @@ def _run_task(state: TaskState) -> None:
                 sandbox.destroy(state.task_id)
             except Exception:  # noqa: BLE001
                 pass
+        # 锚点必须在 sandbox.destroyed 之后写入：事件数 + 最终哈希 + 可选 HMAC，
+        # 用来检测“末尾被截断”这种链本身仍自洽的篡改。
+        try:
+            trace.seal(TRACES / f"{state.trace_id}.anchor.json",
+                       hmac_key=os.environ.get("TRACE_HMAC_KEY") or None)
+        except Exception:  # noqa: BLE001 - 锚点失败不掩盖任务结果
+            pass
         try:
             _TASK_SLOT.release()
         except ValueError:  # pragma: no cover - 只有异常路径可能重复释放
@@ -218,8 +267,7 @@ def get_policy() -> dict[str, Any]:
 
 @app.post("/api/tasks")
 def create_task(body: dict[str, Any], request: Request,
-                x_demo_token: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_demo_token(x_demo_token)
+                principal: str = Depends(_require_principal)) -> dict[str, Any]:
     task = str(body.get("task", "")).strip()
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
@@ -233,7 +281,7 @@ def create_task(body: dict[str, Any], request: Request,
 
     task_id = "tk_" + uuid.uuid4().hex[:10]
     trace_id = new_trace_id()
-    state = TaskState(task_id=task_id, trace_id=trace_id, task=task)
+    state = TaskState(task_id=task_id, trace_id=trace_id, task=task, owner=principal)
     with _LOCK:
         TASKS[task_id] = state
     try:
@@ -245,10 +293,8 @@ def create_task(body: dict[str, Any], request: Request,
 
 
 @app.get("/api/tasks/{task_id}")
-def get_task(task_id: str) -> dict[str, Any]:
-    state = TASKS.get(task_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="task not found")
+def get_task(task_id: str, principal: str = Depends(_require_principal)) -> dict[str, Any]:
+    state = _owned_task(task_id, principal)
     return {
         "task_id": state.task_id,
         "trace_id": state.trace_id,
@@ -260,10 +306,8 @@ def get_task(task_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/tasks/{task_id}/events")
-def stream_events(task_id: str) -> StreamingResponse:
-    state = TASKS.get(task_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="task not found")
+def stream_events(task_id: str, principal: str = Depends(_require_principal)) -> StreamingResponse:
+    state = _owned_task(task_id, principal)
 
     def generate():
         cursor = 0
@@ -289,36 +333,52 @@ def stream_events(task_id: str) -> StreamingResponse:
 
 @app.post("/api/tasks/{task_id}/approvals/{call_id}")
 def resolve_approval(task_id: str, call_id: str, body: dict[str, Any],
-                     x_demo_token: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_demo_token(x_demo_token)
+                     principal: str = Depends(_require_principal)) -> dict[str, Any]:
+    """严格布尔审批：字符串 "false"、数字 1、缺字段一律 422，绝不隐式转换。
+
+    还校验：任务存在且属于当前 principal；call_id 对应该任务；不允许重复审批。
+    """
+    _owned_task(task_id, principal)
+    approved = body.get("approved", _MISSING)
+    if approved is _MISSING or type(approved) is not bool:
+        raise HTTPException(
+            status_code=422,
+            detail="'approved' must be a JSON boolean (true/false), not a string or number",
+        )
     key = (task_id, call_id)
     with _LOCK:
         record = PENDING.get(key)
-        if not record:
+        if record is None:
             raise HTTPException(status_code=404, detail="approval not found or expired")
-        record["approved"] = bool(body.get("approved", False))
+        if record.get("owner") != principal:
+            raise HTTPException(status_code=404, detail="approval not found or expired")
+        if record.get("resolved"):
+            raise HTTPException(status_code=409, detail="approval already resolved")
+        record["resolved"] = True
+        record["approved"] = approved
         record["event"].set()
-    return {"ok": True, "approved": record["approved"]}
+    return {"ok": True, "approved": approved}
 
 
 @app.get("/api/tasks/{task_id}/trace/verify")
-def verify_trace(task_id: str) -> dict[str, Any]:
-    """对已落盘的 trace 重新计算哈希链：返回第一个坏事件的 seq。"""
-    state = TASKS.get(task_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="task not found")
+def verify_trace(task_id: str, principal: str = Depends(_require_principal)) -> dict[str, Any]:
+    """结构化校验：链完整性 + 序号连续 + 终止事件 + 锚点（+ 可选 HMAC）。"""
+    state = _owned_task(task_id, principal)
     path = TRACES / f"{state.trace_id}.jsonl"
     if not path.exists():
         raise HTTPException(status_code=404, detail="trace not ready")
-    ok, bad = verify_file(path)
-    return {"ok": ok, "bad_seq": bad, "events": len(path.read_text(encoding="utf-8").splitlines())}
+    result = verify_trace_file(
+        path,
+        task_status=state.status,
+        anchor_path=TRACES / f"{state.trace_id}.anchor.json",
+        hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
+    )
+    return result
 
 
 @app.get("/api/tasks/{task_id}/trace.jsonl")
-def download_trace(task_id: str) -> FileResponse:
-    state = TASKS.get(task_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="task not found")
+def download_trace(task_id: str, principal: str = Depends(_require_principal)) -> FileResponse:
+    state = _owned_task(task_id, principal)
     path = TRACES / f"{state.trace_id}.jsonl"
     if not path.exists():
         raise HTTPException(status_code=404, detail="trace not ready")
