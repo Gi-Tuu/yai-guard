@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import threading
 from pathlib import Path
@@ -24,34 +25,121 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def verify_file(path: str | Path) -> tuple[bool, int | None]:
-    """独立校验一个 JSONL trace 文件（不依赖内存中的 TraceStore 实例）。
-
-    API 的 "校验完整性" 端点用它读取已落盘文件，因此客户端可先下载、再校验。
-    返回 (ok, 第一个坏事件的 seq)；文件不存在返回 (False, None)。
-    """
-    p = Path(path)
-    if not p.exists():
-        return False, None
-    prev = GENESIS
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
+def _read_events(path: Path) -> tuple[list[dict[str, Any]], str | None]:
+    if not path.exists():
+        return [], "missing"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return [], f"unreadable: {exc}"
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
             continue
         try:
-            ev = json.loads(line)
+            events.append(json.loads(line))
         except json.JSONDecodeError:
-            return False, None
-        stored_hash = ev.get("hash")
+            return events, "malformed_json"
+    if not events:
+        return [], "empty"
+    return events, None
+
+
+def _verify_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """链完整性 + 严格序号连续性（seq 必须从 1 开始逐条 +1）。"""
+    prev = GENESIS
+    chain_ok = True
+    sequence_ok = True
+    bad_seq: int | None = None
+    for index, ev in enumerate(events, start=1):
+        if ev.get("seq") != index:
+            sequence_ok = False
+            bad_seq = bad_seq if bad_seq is not None else ev.get("seq")
         stored_prev = ev.get("prev_hash")
         if stored_prev != prev:
-            return False, ev.get("seq")
+            chain_ok = False
+            bad_seq = bad_seq if bad_seq is not None else ev.get("seq")
+            break
         body = {k: v for k, v in ev.items() if k != "hash"}
         expect = "sha256:" + hashlib.sha256((prev + canonical_json(body)).encode("utf-8")).hexdigest()
-        if stored_hash != expect:
-            return False, ev.get("seq")
-        prev = stored_hash
-    return True, None
+        if ev.get("hash") != expect:
+            chain_ok = False
+            bad_seq = bad_seq if bad_seq is not None else ev.get("seq")
+            break
+        prev = ev["hash"]
+    return {"chain_ok": chain_ok, "sequence_ok": sequence_ok, "bad_seq": bad_seq,
+            "final_hash": prev if chain_ok else None}
+
+
+def verify_trace_file(
+    path: str | Path,
+    *,
+    task_status: str | None = None,
+    anchor_path: str | Path | None = None,
+    hmac_key: str | None = None,
+) -> dict[str, Any]:
+    """结构化校验：区分 chain / sequence / completeness / anchor / HMAC。
+
+    诚实边界：SHA-256 链只能证明“生成后未被改动”，不能证明“日志完整记录了所有操作”；
+    HMAC 只能证明“拿着密钥的人认可过这份锚点”。两者都不是绝对不可篡改。
+    """
+    p = Path(path)
+    events, error = _read_events(p)
+    result: dict[str, Any] = {
+        "ok": False, "reason": error, "events": len(events),
+        "chain_ok": False, "sequence_ok": False, "completeness_ok": None,
+        "anchor_ok": None, "authentic": None, "bad_seq": None, "final_hash": None,
+    }
+    if error:
+        return result
+
+    chain = _verify_chain(events)
+    result.update(chain)
+    result["final_hash"] = events[-1].get("hash")
+
+    kinds = [ev.get("event") for ev in events]
+    if task_status == "completed":
+        result["completeness_ok"] = bool(
+            "task.completed" in kinds and kinds and kinds[-1] == "sandbox.destroyed"
+        )
+    elif task_status == "failed":
+        result["completeness_ok"] = "task.failed" in kinds
+
+    if anchor_path is not None and Path(anchor_path).exists():
+        try:
+            anchor = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            result["anchor_ok"] = False
+        else:
+            anchor_ok = (
+                anchor.get("events") == len(events)
+                and anchor.get("final_hash") == result["final_hash"]
+            )
+            result["anchor_ok"] = anchor_ok
+            if hmac_key:
+                supplied = anchor.get("hmac")
+                body = {k: v for k, v in anchor.items() if k != "hmac"}
+                expect = hmac.new(hmac_key.encode("utf-8"),
+                                  canonical_json(body).encode("utf-8"),
+                                  hashlib.sha256).hexdigest()
+                result["authentic"] = bool(supplied) and hmac.compare_digest(supplied, expect)
+            else:
+                result["authentic"] = None
+
+    result["ok"] = bool(
+        result["chain_ok"]
+        and result["sequence_ok"]
+        and result["completeness_ok"] is not False
+        and result["anchor_ok"] is not False
+        and result["authentic"] is not False
+    )
+    return result
+
+
+def verify_file(path: str | Path) -> tuple[bool, int | None]:
+    """兼容旧调用：只做链校验，返回 (ok, bad_seq)。"""
+    result = verify_trace_file(path)
+    return result["chain_ok"], result["bad_seq"]
 
 
 class TraceError(RuntimeError):
@@ -141,6 +229,30 @@ class TraceStore:
         if not self.path.exists():
             return ""
         return self.path.read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------ anchor
+    def seal(self, anchor_path: str | Path, *, hmac_key: str | None = None) -> dict[str, Any]:
+        """写锚点：事件数量 + 最终哈希（+ 可选 HMAC）。
+
+        锚点与 trace 分开存放，用于检测“末尾被截断/删除”这类链本身仍然自洽的篡改。
+        HMAC 只有在密钥不被攻击者拿到时才有意义——这是信任边界，不是绝对保证。
+        """
+        events = self.read()
+        payload: dict[str, Any] = {
+            "schema_version": "1.0",
+            "trace_id": self.trace_id,
+            "events": len(events),
+            "final_hash": events[-1]["hash"] if events else GENESIS,
+            "sealed_at": utc_now_iso(),
+        }
+        if hmac_key:
+            payload["hmac"] = hmac.new(
+                hmac_key.encode("utf-8"),
+                canonical_json(payload).encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+        Path(anchor_path).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        return payload
 
     # ---------------------------------------------------------------- resume
     def _resume(self) -> None:
