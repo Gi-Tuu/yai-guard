@@ -1,0 +1,32 @@
+# Sandbox Controller 专用镜像：Python 服务 + Docker CLI。
+#
+# 为什么单独一个 Dockerfile：app 控制面镜像绝不能带 Docker CLI（否则等于给了
+# 执行面能力）；只有 sandbox VM 上的 controller 需要调用宿主 daemon。
+# Docker CLI 从官方镜像多阶段拷贝，不额外安装 daemon。
+FROM docker:27-cli AS dockercli
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOME=/tmp
+
+WORKDIR /app
+
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/app ./app
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+
+# 固定 uid/gid；docker.sock 的组权限在运行时通过 compose group_add 追加，
+# 不使用 root 运行 controller。
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home appuser \
+    && chown -R appuser:app /app
+
+USER 10001:10001
+
+EXPOSE 9000
+CMD ["uvicorn", "app.controller:app", "--host", "0.0.0.0", "--port", "9000"]

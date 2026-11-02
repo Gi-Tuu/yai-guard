@@ -15,6 +15,7 @@ class Limits:
     nofile: int = 512
     timeout_s: int = 120
     max_output_bytes: int = 8192
+    max_total_output_bytes: int = 1_048_576
 
     def to_dict(self) -> dict:
         return {
@@ -23,6 +24,8 @@ class Limits:
             "pids": self.pids,
             "nofile": self.nofile,
             "timeout_s": self.timeout_s,
+            "max_output_bytes": self.max_output_bytes,
+            "max_total_output_bytes": self.max_total_output_bytes,
         }
 
 
