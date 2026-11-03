@@ -294,9 +294,26 @@ class DockerSandbox:
         if result.returncode != 0:
             raise DockerError(f"docker run failed: {result.stderr.strip()[:400]}")
 
-    def destroy(self, task_id: str) -> None:
-        subprocess.run([self.docker_bin, "rm", "-f", f"yaig-{task_id}"],
-                       capture_output=True, text=True, timeout=30)
+    def destroy(self, task_id: str) -> dict:
+        """删除容器并用 inspect 确认；只有确认不存在才返回 verified=True。"""
+        name = f"yaig-{task_id}"
+        rm = subprocess.run([self.docker_bin, "rm", "-f", name],
+                            capture_output=True, text=True, timeout=30)
+        inspect = subprocess.run([self.docker_bin, "inspect", "--format", "{{.Id}}", name],
+                                 capture_output=True, text=True, timeout=20)
+        exists = inspect.returncode == 0
+        stderr = inspect.stderr.strip()
+        absent = (not exists) and ("no such" in stderr.lower() or "not found" in stderr.lower())
+        verified = absent and not exists
+        return {
+            "ok": verified,
+            "verified": verified,
+            "backend": "docker",
+            "container": name,
+            "rm_exit": rm.returncode,
+            "inspect_exit": inspect.returncode,
+            "error": None if verified else (stderr[:400] or "container may still exist"),
+        }
 
     # ------------------------------------------------------------------ files
     def put_file(self, task_id: str, path: str, data: bytes) -> None:

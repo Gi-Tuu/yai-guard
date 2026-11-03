@@ -205,7 +205,9 @@ def _approver(task_id: str, owner: str):
 # ---------------------------------------------------------------- task runner
 def _run_task(state: TaskState) -> None:
     trace = TraceStore(TRACES / f"{state.trace_id}.jsonl", state.trace_id)
-    sandbox = None
+    final_status = "failed"
+    final_summary = ""
+    final_error: str | None = None
     try:
         trace.append(task_id=state.task_id, actor="user", event="task.created",
                      payload={"task": state.task})
@@ -223,30 +225,27 @@ def _run_task(state: TaskState) -> None:
             approver=_approver(state.task_id, state.owner),
             emit=state.events.append,
         )
-        state.status = result.status
-        state.summary = result.summary
-        state.error = result.error
+        final_status = result.status
+        final_summary = result.summary
+        final_error = result.error
     except Exception as exc:  # noqa: BLE001 - 任何失败都要落到任务状态与审计
-        state.status = "failed"
-        state.error = f"{type(exc).__name__}: {exc}"
+        final_status = "failed"
+        final_error = f"{type(exc).__name__}: {exc}"
         try:
             trace.append(task_id=state.task_id, actor="system", event="task.failed",
-                         payload={"error": state.error})
+                         payload={"error": final_error})
         except Exception:  # noqa: BLE001
             pass
     finally:
-        if sandbox is not None:
-            try:
-                sandbox.destroy(state.task_id)
-            except Exception:  # noqa: BLE001
-                pass
-        # 锚点必须在 sandbox.destroyed 之后写入：事件数 + 最终哈希 + 可选 HMAC，
-        # 用来检测“末尾被截断”这种链本身仍自洽的篡改。
+        # 先写锚点，再把任务标记为终态：避免客户端在 anchor 尚未落盘时读到 completed。
         try:
             trace.seal(TRACES / f"{state.trace_id}.anchor.json",
                        hmac_key=os.environ.get("TRACE_HMAC_KEY") or None)
-        except Exception:  # noqa: BLE001 - 锚点失败不掩盖任务结果
-            pass
+        except Exception as exc:  # noqa: BLE001 - 锚点失败不掩盖任务结果，但要在状态里可见
+            final_error = final_error or f"anchor_seal_failed: {type(exc).__name__}: {exc}"
+        state.status = final_status
+        state.summary = final_summary
+        state.error = final_error
         try:
             _TASK_SLOT.release()
         except ValueError:  # pragma: no cover - 只有异常路径可能重复释放
@@ -372,6 +371,7 @@ def verify_trace(task_id: str, principal: str = Depends(_require_principal)) -> 
         task_status=state.status,
         anchor_path=TRACES / f"{state.trace_id}.anchor.json",
         hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
+        strict=state.status in ("completed", "failed"),
     )
     return result
 

@@ -188,6 +188,35 @@ class TraceIntegrityTest(unittest.TestCase):
         self.assertFalse(result["authentic"])
         self.assertFalse(result["ok"])
 
+    # ------------------------------------------------------ strict mode (P0-E)
+    def test_strict_missing_anchor_is_incomplete(self) -> None:
+        self._make(anchor=False)
+        result = verify_trace_file(self.trace, task_status="completed", strict=True)
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertFalse(result["ok"])
+
+    def test_strict_running_task_is_pending(self) -> None:
+        TraceStore(self.trace, "tr_running").append(
+            task_id="tk", actor="system", event="task.created", payload={})
+        result = verify_trace_file(self.trace, task_status="running", strict=True)
+        self.assertEqual(result["status"], "PENDING")
+        self.assertFalse(result["ok"])
+
+    def test_strict_hmac_missing_is_not_verified(self) -> None:
+        self._make(hmac_key="")
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k", strict=True)
+        self.assertFalse(result["authentic"])
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(result["ok"])
+
+    def test_strict_valid_trace_is_verified(self) -> None:
+        self._make()
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k", strict=True)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertTrue(result["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

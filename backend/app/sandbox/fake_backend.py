@@ -33,9 +33,10 @@ class FakeSandbox:
         self.limits = limits
         self._tasks.add(task_id)
 
-    def destroy(self, task_id: str) -> None:
+    def destroy(self, task_id: str) -> dict:
         self._tasks.discard(task_id)
         self._killed.pop(task_id, None)
+        return {"ok": True, "verified": True, "backend": "fake", "container": f"yaig-{task_id}"}
 
     def host_fingerprint(self) -> dict:
         return dict(self.host, sandbox_hostname=f"yaig-sandbox-{next(iter(self._tasks), 'idle')}")

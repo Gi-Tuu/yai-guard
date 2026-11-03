@@ -146,10 +146,12 @@ cd /opt/yai-guard
 cat > .env <<EOF
 DOMAIN=$DOMAIN
 ACME_EMAIL=you@example.com
+APP_ENV=production
 VULTR_INFERENCE_API_KEY=<稍后填>
 MODEL_PRIMARY=deepseek-v4.1-flash-1017
 MOCK_MODEL=0
-DEMO_TOKEN=<openssl rand -hex 16>
+DEMO_TOKEN=$(openssl rand -hex 16)
+TRACE_HMAC_KEY=$(openssl rand -hex 32)
 RATE_LIMIT_PER_MIN=10
 SANDBOX_DRIVER=remote
 SANDBOX_BASE_URL=http://<sandbox 私网 IP>:9000

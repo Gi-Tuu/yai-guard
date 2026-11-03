@@ -131,5 +131,9 @@ def list_files(task_id: str, path: str = "/workspace",
 def destroy(task_id: str,
             x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
-    _backend.destroy(task_id)
-    return {"ok": True}
+    result = _backend.destroy(task_id)
+    if not result.get("verified"):
+        raise HTTPException(status_code=500, detail={
+            "error": "container destroy could not be verified", "result": result,
+        })
+    return {"ok": True, **result}

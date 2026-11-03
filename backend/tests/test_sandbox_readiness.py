@@ -66,5 +66,17 @@ class ReadinessTest(unittest.TestCase):
             self.assertTrue(info["image"]["ok"])
 
 
+class RemoteDestroyTest(unittest.TestCase):
+    def test_remote_destroy_rejects_unverified(self) -> None:
+        from app.sandbox.remote_backend import RemoteSandbox
+
+        class BadRemote(RemoteSandbox):
+            def _request(self, method, path, body=None, *, raw=False):
+                return {"ok": True, "verified": False, "error": "still exists"}
+
+        with self.assertRaises(RuntimeError):
+            BadRemote("http://127.0.0.1:9000", "token").destroy("tk_x")
+
+
 if __name__ == "__main__":
     unittest.main()

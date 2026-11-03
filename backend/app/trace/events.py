@@ -32,6 +32,8 @@ EVENT_TYPES = {
     "file.changed",
     "resource.limit",
     "sandbox.destroyed",
+    "sandbox.destroy.confirmed",
+    "sandbox.destroy.unverified",
     "task.completed",
     "task.failed",
 }

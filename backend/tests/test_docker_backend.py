@@ -147,6 +147,18 @@ class DockerSandboxBackendTest(unittest.TestCase):
         finally:
             sandbox.destroy(task_id)
 
+    def test_destroy_is_verified_and_idempotent(self) -> None:
+        from app.sandbox.docker_backend import DockerSandbox
+        from app.sandbox.interface import Limits
+
+        sandbox = DockerSandbox(image=IMAGE)
+        task_id = "tk_destroy_verify"
+        sandbox.create(task_id, Limits(timeout_s=10))
+        first = sandbox.destroy(task_id)
+        self.assertTrue(first["verified"], first)
+        second = sandbox.destroy(task_id)  # already absent: must still be verified
+        self.assertTrue(second["verified"], second)
+
 
 if __name__ == "__main__":
     unittest.main()

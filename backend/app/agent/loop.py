@@ -76,14 +76,6 @@ def run_agent(
         return ev
 
     started = time.monotonic()
-    sandbox.create(task_id, _limits_from(policy))
-    record(actor="system", event="sandbox.created", payload={
-        "runtime": getattr(sandbox, "runtime", "unknown"),
-        "limits": limits,
-        "host": sandbox.host_fingerprint(),
-        "host_fingerprint": _host_snapshot(sandbox),
-    })
-
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": USER_TEMPLATE.format(task=task)},
@@ -91,6 +83,13 @@ def run_agent(
 
     step = 0
     try:
+        sandbox.create(task_id, _limits_from(policy))
+        record(actor="system", event="sandbox.created", payload={
+            "runtime": getattr(sandbox, "runtime", "unknown"),
+            "limits": limits,
+            "host": sandbox.host_fingerprint(),
+            "host_fingerprint": _host_snapshot(sandbox),
+        })
         while step < max_steps:
             step += 1
             elapsed = time.monotonic() - started
@@ -201,10 +200,19 @@ def run_agent(
         return RunResult("failed", steps=step, error="max_steps_exceeded")
 
     finally:
-        sandbox.destroy(task_id)
-        record(actor="system", event="sandbox.destroyed", payload={
+        # 销毁必须被验证：成功写 confirmed，失败/无法确认写 unverified，绝不静默吞掉。
+        try:
+            cleanup = sandbox.destroy(task_id) or {}
+        except Exception as exc:  # noqa: BLE001 - 清理失败要记录，不能掩盖任务结果
+            cleanup = {"ok": False, "verified": False,
+                       "backend": type(sandbox).__name__,
+                       "error": f"{type(exc).__name__}: {exc}"}
+        event = "sandbox.destroy.confirmed" if cleanup.get("verified") is True \
+            else "sandbox.destroy.unverified"
+        record(actor="system", event=event, payload={
             "task_id": task_id,
             "reason": "lifecycle_end",
+            "cleanup": cleanup,
         })
 
 

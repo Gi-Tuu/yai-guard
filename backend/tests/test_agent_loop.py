@@ -46,7 +46,7 @@ class AgentLoopTest(unittest.TestCase):
         types = [e["event"] for e in events]
         for expected in ("sandbox.created", "plan.created", "tool.requested",
                          "policy.decision", "sandbox.exec", "file.changed",
-                         "task.completed", "sandbox.destroyed"):
+                         "task.completed", "sandbox.destroy.confirmed"):
             self.assertIn(expected, types, expected)
 
         denials = [e for e in events if e["event"] == "policy.decision"
@@ -81,6 +81,19 @@ class AgentLoopTest(unittest.TestCase):
     def test_sandbox_is_destroyed(self) -> None:
         self._run_demo()
         self.assertNotIn("tk_test", self.sandbox._tasks)
+
+    def test_unverified_destroy_is_recorded_not_confirmed(self) -> None:
+        class BadDestroySandbox(FakeSandbox):
+            def destroy(self, task_id: str) -> dict:
+                return {"ok": False, "verified": False, "backend": "bad",
+                        "error": "simulated docker failure"}
+
+        self.sandbox = BadDestroySandbox()
+        result = self._run_demo()
+        self.assertEqual(result.status, "completed")
+        types = [e["event"] for e in self.trace.read()]
+        self.assertIn("sandbox.destroy.unverified", types)
+        self.assertNotIn("sandbox.destroy.confirmed", types)
 
     # --------------------------------------------- 宿主指纹 / 资源超限事件
     def test_host_fingerprints_are_recorded(self) -> None:

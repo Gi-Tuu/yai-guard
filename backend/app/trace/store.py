@@ -77,20 +77,31 @@ def verify_trace_file(
     task_status: str | None = None,
     anchor_path: str | Path | None = None,
     hmac_key: str | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
-    """结构化校验：区分 chain / sequence / completeness / anchor / HMAC。
+    """结构化校验：区分 chain / sequence / completeness / cleanup / anchor / HMAC。
 
-    诚实边界：SHA-256 链只能证明“生成后未被改动”，不能证明“日志完整记录了所有操作”；
-    HMAC 只能证明“拿着密钥的人认可过这份锚点”。两者都不是绝对不可篡改。
+    strict=True 时（终态任务）：
+    - 必须有 anchor，且 anchor 的 events/final_hash 与文件一致；
+    - 若配置了 hmac_key，anchor 必须带可验证 HMAC；
+    - 终态任务必须有 confirmed（或旧版 destroyed）销毁事件；
+    - 缺失 Anchor → INCOMPLETE（绝不返回 VERIFIED）。
+    运行中任务返回 PENDING。
     """
     p = Path(path)
     events, error = _read_events(p)
+    terminal = task_status in ("completed", "failed")
     result: dict[str, Any] = {
-        "ok": False, "reason": error, "events": len(events),
+        "ok": False, "status": "UNVERIFIABLE", "reason": error, "events": len(events),
         "chain_ok": False, "sequence_ok": False, "completeness_ok": None,
-        "anchor_ok": None, "authentic": None, "bad_seq": None, "final_hash": None,
+        "cleanup_ok": None, "anchor_ok": None, "authentic": None,
+        "bad_seq": None, "final_hash": None, "strict": strict,
     }
+    if task_status in ("queued", "running"):
+        result["status"] = "PENDING"
+        return result
     if error:
+        result["status"] = "UNVERIFIABLE" if error in ("missing", "unreadable") else "FAILED"
         return result
 
     chain = _verify_chain(events)
@@ -98,41 +109,73 @@ def verify_trace_file(
     result["final_hash"] = events[-1].get("hash")
 
     kinds = [ev.get("event") for ev in events]
+    last = kinds[-1] if kinds else None
+    if last == "sandbox.destroy.unverified":
+        result["cleanup_ok"] = False
+    elif last in ("sandbox.destroy.confirmed", "sandbox.destroyed"):
+        result["cleanup_ok"] = True
     if task_status == "completed":
         result["completeness_ok"] = bool(
-            "task.completed" in kinds and kinds and kinds[-1] == "sandbox.destroyed"
+            "task.completed" in kinds and last in ("sandbox.destroy.confirmed", "sandbox.destroyed")
         )
     elif task_status == "failed":
         result["completeness_ok"] = "task.failed" in kinds
 
-    if anchor_path is not None and Path(anchor_path).exists():
+    anchor_present = bool(anchor_path) and Path(anchor_path).exists()
+    if anchor_path is not None and not anchor_present:
+        result["anchor_ok"] = False
+        result["reason"] = "anchor_missing"
+    elif anchor_present:
         try:
             anchor = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             result["anchor_ok"] = False
+            result["reason"] = "anchor_malformed"
         else:
             anchor_ok = (
                 anchor.get("events") == len(events)
                 and anchor.get("final_hash") == result["final_hash"]
             )
             result["anchor_ok"] = anchor_ok
+            if not anchor_ok:
+                result["reason"] = "anchor_mismatch"
             if hmac_key:
                 supplied = anchor.get("hmac")
                 body = {k: v for k, v in anchor.items() if k != "hmac"}
                 expect = hmac.new(hmac_key.encode("utf-8"),
                                   canonical_json(body).encode("utf-8"),
                                   hashlib.sha256).hexdigest()
-                result["authentic"] = bool(supplied) and hmac.compare_digest(supplied, expect)
+                if not supplied:
+                    result["authentic"] = False
+                    result["reason"] = result["reason"] or "hmac_missing"
+                else:
+                    result["authentic"] = hmac.compare_digest(supplied, expect)
+                    if not result["authentic"]:
+                        result["reason"] = "hmac_mismatch"
             else:
                 result["authentic"] = None
 
-    result["ok"] = bool(
-        result["chain_ok"]
-        and result["sequence_ok"]
-        and result["completeness_ok"] is not False
-        and result["anchor_ok"] is not False
-        and result["authentic"] is not False
-    )
+    if not result["chain_ok"] or not result["sequence_ok"]:
+        result["status"] = "FAILED"
+    elif result["completeness_ok"] is False:
+        result["status"] = "INCOMPLETE"
+    elif result["cleanup_ok"] is False:
+        result["status"] = "INCOMPLETE"
+    elif strict and terminal:
+        if anchor_path is None or result["anchor_ok"] is not True:
+            result["status"] = "INCOMPLETE" if result["anchor_ok"] is not False else "FAILED"
+        elif result["cleanup_ok"] is not True:
+            result["status"] = "INCOMPLETE"
+        elif hmac_key and result["authentic"] is not True:
+            result["status"] = "FAILED"
+        else:
+            result["status"] = "VERIFIED"
+    elif result["anchor_ok"] is False or result["authentic"] is False:
+        result["status"] = "FAILED"
+    else:
+        result["status"] = "VERIFIED"
+
+    result["ok"] = result["status"] == "VERIFIED"
     return result
 
 

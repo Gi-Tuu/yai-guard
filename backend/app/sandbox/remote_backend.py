@@ -20,12 +20,12 @@ class RemoteSandbox:
     def create(self, task_id: str, limits: Limits) -> None:
         self._request("POST", f"/v1/sandbox/{task_id}", limits.to_dict())
 
-    def destroy(self, task_id: str) -> None:
-        try:
-            self._request("DELETE", f"/v1/sandbox/{task_id}")
-        except RuntimeError:
-            # 销毁失败不应掩盖原始错误；由 GC 兜底
-            pass
+    def destroy(self, task_id: str) -> dict:
+        """DELETE 必须成功且 Controller 返回 verified=true；失败向上抛，不静默吞掉。"""
+        payload = self._request("DELETE", f"/v1/sandbox/{task_id}")
+        if payload.get("verified") is not True:
+            raise RuntimeError(f"destroy not verified by controller: {payload}")
+        return payload
 
     # ------------------------------------------------------------------ files
     def put_file(self, task_id: str, path: str, data: bytes) -> None:
