@@ -5,16 +5,16 @@
 > 公开仓库：**https://github.com/Gi-Tuu/yai-guard** ｜ License: MIT
 > [![CI](https://github.com/Gi-Tuu/yai-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Gi-Tuu/yai-guard/actions/workflows/ci.yml)
 
-**当前状态（2026-11-02，分支 `harden/round1`）：预研 + 骨架 + 第一轮安全加固。**
-**101 个测试在启用 `REQUIRE_API_TESTS=1 / REQUIRE_DOCKER_TESTS=1` 时全部实际执行（0 skipped）**；Controller 已用真实 Docker 验证 create/exec/destroy、只读根、零网络、超时与 0 残留；API 统一鉴权、严格布尔审批、有界输出、Trace 锚点/HMAC 校验均已落地。
-**未部署任何收费资源、未调用真实推理 API、未修改 YAI 主仓库；改动尚未合并到 main。**
+**当前状态（2026-11-03）：第一轮安全加固已通过 PR #1 squash merge 到 `main`（`b1543ab`），main CI 通过。**
+**101 项测试在安装 `backend/requirements-dev.txt` 并启用必需环境变量时全部实际执行**；Controller 已用真实 Docker 验证 create/exec/destroy、只读根、零网络、超时与 0 残留；API 统一鉴权、严格布尔审批、有界输出、Trace 锚点/HMAC 校验均已落地。
+**未部署任何收费资源、未调用真实推理 API、未修改 YAI 主仓库。**
 
 ---
 
 ## Quickstart（不需要 key / 本地 Docker 可选 / 不花钱）
 
 ```bash
-# 1) 72 个单测（Docker 测试在无 daemon / 无镜像时自动 skip）
+# 1) 测试（先 pip install -r backend/requirements-dev.txt）
 python -m unittest discover -s backend/tests -t backend -v
 
 # 2) 离线端到端演示：Mock 模型 + Fake 沙箱 + 真实策略 + 真实 trace
@@ -116,7 +116,8 @@ cd backend && ALLOW_ANONYMOUS=1 MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.mai
 | 12 | [`docs/11-Credits领取手册.md`](docs/11-Credits领取手册.md) | $200 credits 的领取时点、兑换路径、前置条件、失败处理 |
 | 13 | [`docs/12-安全加固修复报告.md`](docs/12-安全加固修复报告.md) | 第一轮 P0/P1 修复、关键决策、回滚路径、剩余风险 |
 | 14 | [`docs/13-测试与证据报告.md`](docs/13-测试与证据报告.md) | 101 项测试矩阵、证据清单、BLOCKED/NOT RUN 说明 |
-| 11 | [`docs/evidence/`](docs/evidence/) | 波次 1 实测证据：containment、策略红队、API 加固、推理接入状态 |
+| 15 | [`docs/14-Vultr开机器中文对照.md`](docs/14-Vultr开机器中文对照.md) | 今晚开机器：中文界面、SSH key、公网 IP、防火墙、逐项参数 |
+| 16 | [`docs/evidence/`](docs/evidence/) | 实测证据：containment、策略红队、API 加固、推理接入状态 |
 
 证据台账（每条事实附 URL + 访问日期 + 原文摘录）：
 [`research/00`](research/00-来源与证据.md) · [`research/02`](research/02-inference-证据.md) · [`research/03`](research/03-sandbox-证据.md) · [`research/07`](research/07-cost-证据.md)

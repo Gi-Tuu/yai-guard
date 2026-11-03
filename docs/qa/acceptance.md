@@ -79,7 +79,7 @@ RESULT: ALL CHECKS PASSED (1 skipped)
 | P1-2 统一鉴权（任务/SSE/trace） | **PASS** | `test_api.py` 401/404/200 矩阵 |
 | P1-3 输出硬性限额 | **PASS** | [P1-3 证据](../evidence/P1-3-bounded-output.md) |
 | P1-4 Trace 完整性 | **PASS** | `test_trace.py` 链/序号/终止/锚点/HMAC |
-| P1-5 CI 分层 | **PASS** | 本地 101 tests 0 skipped + GitHub Actions run `41477550680` 四 job 全绿 |
+| P1-5 CI 分层 | **PASS** | 本地 101 tests 0 skipped + GitHub Actions 两次 run 四 job 全绿；PR #1 已 squash merge（main `b1543ab`） |
 | P1-6 gVisor/runc 一致性 | **PASS（文档+实现）** | [P1-6 证据](../evidence/P1-6-runtime-status.md) |
 | 真实 Vultr 双 VM | **BLOCKED** | 需 credits 与授权 |
 | gVisor 实测 | **NOT RUN** | 宿主无 runsc |

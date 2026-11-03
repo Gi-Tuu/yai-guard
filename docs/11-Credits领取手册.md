@@ -1,7 +1,7 @@
 # 11 · $200 Vultr Credits 领取手册
 
-> 结论：**现在（11-01）还没有可领的 code。** 官方明确 "Gift code available at kickoff"——code 在 **11-03 kickoff** 公布，唯一官方兑换路径是 Vultr Console → Billing → Gift Code → 输入 code。没有任何公开的“提前领取”入口；第三方页面上的通用 $200 优惠码**不是**这个活动的码，用了会占掉“一人一码”的名额。
-> 适用：YAI Guard / Vultr Agent Rush 2026 ｜ 信息来源：lablab 赛事页（2026-11-01 复核）+ Vultr 官方文档
+> 结论：**现在（11-03 19:00）还没有可领的 code。** 官方明确 "Gift code available at kickoff"——code 在 **今晚 23:00（北京）kickoff** 公布，唯一官方兑换路径是 Vultr Console → Billing → Gift Code → 输入 code。没有任何公开的“提前领取”入口；第三方页面上的通用 $200 优惠码**不是**这个活动的码，用了会占掉“一人一码”的名额。
+> 适用：YAI Guard / Vultr Agent Rush 2026 ｜ 信息来源：lablab 赛事页（2026-11-03 复核）+ Vultr 官方文档
 
 ---
 
@@ -59,11 +59,12 @@ Vultr 官方文档只规定“怎么兑换”，不提供活动码；活动码�
 | lablab Twitch | `https://twitch.tv/lablabai` | 官方直播频道（页面有 Twitch 链接） |
 | Vultr Community 事件帖 | `https://community.vultr.com/e/vultr-agent-rush-hackathon` | 主办方也可能在这里贴 code/说明 |
 
-**时区注意（重要）**：lablab 页面同时出现两套时间口径——
-- 直播页倒计时按 **11-03 15:00 UTC**（= 北京 23:00）；
-- 赛事页 Agenda 写 **Nov 3 11:00 AM Eastern**，提交写 **Nov 8 6:00 PM Eastern**。11 月美国已转冬令时（EST, UTC-5），若按字面 EST 换算则是北京 **11-04 00:00** 开始、**11-09 07:00** 截止，比直播页晚 1 小时。
+**时区（2026-11-03 复核，以 Live 页倒计时为准）**：kickoff = **11-03 15:00 UTC = 北京 23:00**；提交 = **11-08 22:00 UTC = 北京 11-09 06:00**。
+赛事页 Agenda 写 "11:00 AM Eastern / 6:00 PM Eastern" 是同一时刻的另一种时区标注（按 EDT 换算即 15:00/22:00 UTC），**以 Live 页倒计时与 UTC 时间为准**。
 
-**行动建议**：**11-03 22:30（北京）就上线**，两套口径都覆盖；提交按更早的 **11-09 03:00** 完成，不赌那 1 小时。
+**23:10 还没看到 code**：直接在 Discord 问一句 `Where can I find the gift code?`；同时检查 Live 页是否已切到直播、Twitch 是否在播。不要自己猜 code。
+
+**行动建议**：**22:30 上线**，盯 Live / Discord / Twitch；提交按 **11-09 03:00** 完成，不赌最后一小时。
 
 ---
 

@@ -2,19 +2,41 @@
 
 > 目标：**3 小时内**从"领到 gift code"走到"公网 HTTPS Demo 跑通一条真实任务"。
 > 前提：报名已完成（lablab enroll + Discord + 1 人 team 选 Challenge 1）、全新邮箱、已绑卡/PayPal。
-> **领取细节见 [`11-Credits领取手册.md`](11-Credits领取手册.md)**；时区有 1 小时口径冲突，**按 22:30 上线、11-09 03:00 提交执行**。
+> **领取细节见 [`11-Credits领取手册.md`](11-Credits领取手册.md)**；今晚 kickoff = **15:00 UTC = 北京 23:00**，提交 = **11-08 22:00 UTC = 北京 11-09 06:00**。
 > 出问题时的降级路径在 §8；**任何一步卡超过 20 分钟就跳降级，不要硬扛**。
+> 面向非技术执行者的逐项中文对照：[`14-Vultr开机器中文对照.md`](14-Vultr开机器中文对照.md)。
 
 ---
 
-## 0. 现在（11-01）就要做完的 4 件事
+## 0. 现在（kickoff 前）就要做完的 4 件事
 
 - [ ] lablab **enroll 成功**（不是"注册账号"，是报名本赛事）
 - [ ] Discord 已连接 lablab profile，已进 lablab Discord
 - [ ] 已建 1 人 team，选择 **Challenge 1: Blast Radius Zero**
-- [ ] 准备一个**从未注册过 Vultr 的邮箱** + 可用的 Credit Card 或 PayPal
+- [ ] 准备一个**从未注册过 Vultr 的邮箱** + 已绑 Credit Card 或 PayPal
 
 > 报名在 kickoff 那一刻关闭，没有补报。其余一切都能在活动期内补。
+
+### 0.1 SSH key 与公网 IP（10 分钟）
+
+Windows 上生成（已生成过就跳过）：
+
+```powershell
+ssh-keygen -t ed25519 -C "yai-guard-hackathon"
+# 公钥默认在 C:\Users\<你>\.ssh\id_ed25519.pub
+Get-Content "$HOME\.ssh\id_ed25519.pub" | Set-Clipboard   # 复制公钥
+```
+
+Vultr：**Account → SSH Keys → Add SSH Key**，粘贴公钥，命名 `yai-guard`；创建服务器时勾选它。
+**公钥可以公开；私钥 `id_ed25519` 绝不外发。**
+
+本机公网 IP：
+
+```powershell
+curl.exe -4 -s https://ifconfig.me
+```
+
+防火墙 SSH 来源填 **`<该IP>/32`**。IP 变了（换网络/VPN）就重新取一次并改防火墙；进不去时用 Vultr 的 **View Console** 网页终端。
 
 ---
 
@@ -22,7 +44,8 @@
 
 | 时间 | 动作 | 门禁 |
 |---|---|---|
-| 23:00–23:15 | 参加 kickoff，**记录 gift code**，确认 credits 到期日/覆盖范围 | 拿到 gift code || 23:15–23:30 | 注册 Vultr（新邮箱）→ 绑卡 → Billing → Gift Code → 确认 `$200.00` | 余额到账 |
+| 23:00–23:15 | 参加 kickoff，**记录 gift code**，确认 credits 到期日/覆盖范围 | 拿到 gift code |
+| 23:15–23:30 | 注册 Vultr（新邮箱）→ 绑卡 → Billing → Gift Code → 确认 `$200.00` | 余额到账 |
 | 23:30–23:50 | 创建两台 VM（同 region、同 VPC） | 两台可 SSH |
 | 23:50–00:05 | 两个 Firewall Group + VPC 私网验证 | 私网互通、公网只开 443 |
 | 00:05–00:25 | 两台装 Docker / Compose / git | `docker run hello-world` OK |
@@ -93,12 +116,13 @@ git clone https://github.com/Gi-Tuu/yai-guard.git /opt/yai-guard && cd /opt/yai-
 # 沙箱镜像（构建需要外网；运行期不需要）
 docker build -f deploy/sandbox/Dockerfile -t yaiguard/sandbox-py:1.0 .
 
-# 环境
-cat > .env <<'EOF'
-SANDBOX_TOKEN=<openssl rand -hex 32 的结果>
+# 环境（DOCKER_GID 必须等于宿主机 docker.sock 的组 ID）
+cat > .env <<EOF
+SANDBOX_TOKEN=$(openssl rand -hex 32)
 SANDBOX_RUNTIME=runc
 SANDBOX_IMAGE=yaiguard/sandbox-py:1.0
 SANDBOX_PRIVATE_IP=<sandbox 私网 IP>
+DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
 EOF
 chmod 600 .env
 
@@ -106,7 +130,8 @@ docker compose -f deploy/compose.sandbox.yaml up -d
 curl -s http://127.0.0.1:9000/healthz
 ```
 
-> `SANDBOX_RUNTIME`：Day-1 再试 `runsc`；第一晚一律 `runc`，先保交付。
+> `DOCKER_GID` 是 controller 访问 `/var/run/docker.sock` 的最小权限：只加 socket 所在组，不用 `--privileged`。Docker Desktop 上通常是 0，Vultr Ubuntu 上通常是 docker 组 GID。
+> `SANDBOX_RUNTIME`：第一晚一律 `runc`；`runsc` 未实测，显式设置且不可用时 controller 会启动失败（不会静默降级）。
 
 ---
 
