@@ -25,12 +25,21 @@ from urllib.parse import urlparse
 def request(base: str, token: str, method: str, path: str,
             body: dict | None = None, timeout: float = 60.0) -> dict:
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        base + path, data=data, method=method,
-        headers={"Content-Type": "application/json", "X-Demo-Token": token},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+    for attempt in range(6):
+        req = urllib.request.Request(
+            base + path, data=data, method=method,
+            headers={"Content-Type": "application/json", "X-Demo-Token": token},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 5:
+                retry = exc.headers.get("Retry-After", "5")
+                time.sleep(min(float(retry), 10.0))
+                continue
+            raise
+    raise RuntimeError("rate limit retries exhausted")
 
 
 def tls_info(base: str) -> str:
