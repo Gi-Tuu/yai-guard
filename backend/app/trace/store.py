@@ -128,7 +128,8 @@ def verify_trace_file(
         result["completeness_ok"] = "task.failed" in kinds
     elif task_status == "cancelled":
         result["completeness_ok"] = bool(
-            "task.cancelled" in kinds and last == "sandbox.destroy.confirmed"
+            "task.cancelled" in kinds
+            and ("sandbox.created" not in kinds or last == "sandbox.destroy.confirmed")
         )
     elif task_status == "interrupted":
         # Recovery proves the interruption; a confirmed cleanup is nice but not
@@ -186,7 +187,9 @@ def verify_trace_file(
     elif strict and terminal:
         if anchor_path is None or result["anchor_ok"] is not True:
             result["status"] = "INCOMPLETE" if result["anchor_ok"] is not False else "FAILED"
-        elif result["cleanup_ok"] is not True and task_status != "interrupted":
+        elif (result["cleanup_ok"] is not True and task_status != "interrupted"
+              and not (task_status in ("failed", "cancelled")
+                       and "sandbox.created" not in kinds)):
             result["status"] = "INCOMPLETE"
         elif hmac_key and result["authentic"] is not True:
             result["status"] = "FAILED"

@@ -34,6 +34,10 @@ def _sha256(path: pathlib.Path) -> str:
 def backup(artifacts: pathlib.Path, out_dir: pathlib.Path) -> pathlib.Path:
     artifacts = artifacts.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir.chmod(0o700)
+    except OSError:
+        pass
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     archive = out_dir / f"yai-guard-{stamp}.tar.gz"
     manifest: dict = {"schema": "yai-guard-backup/v1", "created_at": stamp, "files": {}}
@@ -61,6 +65,10 @@ def backup(artifacts: pathlib.Path, out_dir: pathlib.Path) -> pathlib.Path:
         with tarfile.open(archive, "w:gz") as tar:
             for item in sorted(stage.iterdir()):
                 tar.add(item, arcname=item.name)
+    try:
+        archive.chmod(0o600)
+    except OSError:
+        pass
     return archive
 
 
@@ -72,7 +80,9 @@ def restore(archive: pathlib.Path, artifacts: pathlib.Path, *,
     with tempfile.TemporaryDirectory(prefix="yaig-restore-") as tmp:
         stage = pathlib.Path(tmp)
         with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(stage)
+            # Python 3.12 defaults to fully-trusted extraction; archives must
+            # not be able to write outside the staging directory.
+            tar.extractall(stage, filter="data")
         manifest_path = stage / "manifest.json"
         if not manifest_path.exists():
             raise RuntimeError("manifest.json missing")

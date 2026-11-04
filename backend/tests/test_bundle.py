@@ -351,5 +351,16 @@ class BundleTest(unittest.TestCase):
         self.assertIsNone(result["cleanup_ok"])
         self.assertTrue(result["sandbox_ok"])
 
+    def test_failed_before_sandbox_bundle_is_content_verified(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="task.failed",
+                          payload={"error": "controller unreachable"})
+        self.store.seal(self.anchor)
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        result = verify_bundle_dict(bundle)
+        self.assertEqual(result["status"], "CONTENT_VERIFIED")
+        self.assertIsNone(result["cleanup_ok"])
+        self.assertTrue(result["sandbox_ok"])
+
 if __name__ == "__main__":
     unittest.main()

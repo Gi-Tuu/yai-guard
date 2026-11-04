@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import io
 import pathlib
 import sqlite3
 import subprocess
@@ -63,6 +64,31 @@ class BackupStateTest(unittest.TestCase):
                 (restored / "traces" / "tr_demo.jsonl").read_text(encoding="utf-8"),
                 '{"event":"task.created"}\n',
             )
+
+    def test_restore_rejects_path_traversal(self) -> None:
+        import tarfile
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            archive = base / "evil.tar.gz"
+            manifest = json.dumps({"schema": "yai-guard-backup/v1", "files": {}})
+            with tarfile.open(archive, "w:gz") as tar:
+                data = manifest.encode("utf-8")
+                info = tarfile.TarInfo("manifest.json")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+                evil = b"escaped"
+                info = tarfile.TarInfo("../escaped.txt")
+                info.size = len(evil)
+                tar.addfile(info, io.BytesIO(evil))
+            result = subprocess.run(
+                [sys.executable, str(root / "scripts" / "backup_state.py"),
+                 "restore", str(archive), "--artifacts", str(base / "target"), "--force"],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((base / "escaped.txt").exists())
 
 
 if __name__ == "__main__":

@@ -415,6 +415,65 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertIn({"task_id": "q1", "reason": "already_dispatched"},
                           again["skipped"])
 
+    def test_maintenance_reap_requires_admin_token(self) -> None:
+        old_admin = os.environ.pop("ADMIN_TOKEN", None)
+        old_admins = os.environ.pop("ADMIN_TOKENS", None)
+        try:
+            denied = self.client.post("/api/maintenance/reap", json={"dry_run": True},
+                                      headers=TOKEN_A)
+            self.assertIn(denied.status_code, (403, 503))
+            with mock.patch.dict(os.environ, {"ADMIN_TOKEN": "audit-admin"}):
+                allowed = self.client.post(
+                    "/api/maintenance/reap", json={"dry_run": True},
+                    headers={"X-Demo-Token": "audit-admin"},
+                )
+                self.assertEqual(allowed.status_code, 200)
+                self.assertTrue(allowed.json()["skipped_reason"])
+        finally:
+            if old_admin is not None:
+                os.environ["ADMIN_TOKEN"] = old_admin
+            if old_admins is not None:
+                os.environ["ADMIN_TOKENS"] = old_admins
+
+    def test_api_dispatch_is_tracked_to_prevent_requeue_duplicate(self) -> None:
+        from types import SimpleNamespace
+
+        class FakeService:
+            enabled = True
+
+            def create(self, **kwargs):
+                return None
+
+            def queued_tasks(self):
+                return [SimpleNamespace(id=self.task_id, trace_id="tr", prompt="x",
+                                        owner="u", cancel_requested=False)]
+
+        class FakeExecutor:
+            def __init__(self) -> None:
+                self.submitted = []
+
+            def submit(self, fn, state):
+                self.submitted.append(state)
+
+        service = FakeService()
+        executor = FakeExecutor()
+        with mock.patch.object(api, "TASK_SERVICE", service), \
+                mock.patch.object(api, "_TASK_EXECUTOR", executor), \
+                mock.patch.object(api, "_reserve_queue_slot", return_value=True), \
+                mock.patch.object(api, "_DISPATCHED_QUEUED", set()), \
+                mock.patch.dict(api.TASKS, {}, clear=True):
+            created = self.client.post(
+                "/api/tasks", json={"task": "queued audit"}, headers=TOKEN_A,
+            )
+            self.assertEqual(created.status_code, 200)
+            task_id = created.json()["task_id"]
+            service.task_id = task_id
+            self.assertEqual(len(executor.submitted), 1)
+            self.assertIn(task_id, api._DISPATCHED_QUEUED)
+            summary = api._requeue_queued_tasks()
+            self.assertEqual(summary["requeued"], [])
+            self.assertEqual(len(executor.submitted), 1)
+
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:
         created = self.client.post("/api/tasks", json={"task": "ls /workspace"},
