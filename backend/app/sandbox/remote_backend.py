@@ -74,6 +74,10 @@ class RemoteSandbox:
             killed_reason=payload.get("killed_reason"),
         )
 
+    def reap_orphans(self) -> list[str]:
+        payload = self._request("POST", "/v1/orphans/reap")
+        return list(payload.get("removed", []))
+
     def host_fingerprint(self) -> dict:
         try:
             return self._request("GET", "/healthz")

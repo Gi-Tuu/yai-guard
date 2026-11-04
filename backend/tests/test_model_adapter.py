@@ -164,5 +164,19 @@ class ModelAdapterTest(unittest.TestCase):
         self.assertEqual(len(MODEL_ALLOWLIST), 2)
 
 
+    def test_request_timeout_is_bounded_by_deadline(self) -> None:
+        client = _FakeClient(outcomes=[_resp(content="ok")])
+        model = VultrModel(client=client, timeout_s=90)
+        model.complete([{"role": "user", "content": "x"}], deadline_s=1.0)
+        self.assertLessEqual(client.chat.completions.calls[0]["timeout"], 1.0)
+
+    def test_expired_deadline_fails_before_request(self) -> None:
+        client = _FakeClient(outcomes=[_resp()])
+        with self.assertRaises(ModelError):
+            VultrModel(client=client).complete(
+                [{"role": "user", "content": "x"}], deadline_s=0
+            )
+        self.assertEqual(client.chat.completions.calls, [])
+
 if __name__ == "__main__":
     unittest.main()
