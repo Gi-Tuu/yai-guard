@@ -39,6 +39,33 @@ def _wrap_output(result: dict[str, Any]) -> str:
     return f"<sandbox_output>\n{body}\n</sandbox_output>"
 
 
+def _validate_claims(
+    claims: Any, exec_seqs: list[int], *, required: bool
+) -> tuple[list[dict[str, Any]], str | None]:
+    """每条 claim 必须引用真实 sandbox.exec 事件的 seq；空/无效引用一律拒绝。"""
+    if claims is None:
+        if required:
+            return [], "claims are required when a command was executed"
+        return [], None
+    if not isinstance(claims, list):
+        return [], "claims must be an array"
+    if required and not claims:
+        return [], "claims must not be empty when a command was executed"
+    validated: list[dict[str, Any]] = []
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            return [], f"claim[{index}] must be an object"
+        text = str(claim.get("text") or "").strip()
+        seq = claim.get("evidence_seq")
+        if not text:
+            return [], f"claim[{index}].text must be non-empty"
+        if not isinstance(seq, int) or seq not in exec_seqs:
+            return [], (f"claim[{index}].evidence_seq={seq!r} is not a real sandbox.exec seq; "
+                        f"available={exec_seqs}")
+        validated.append({"text": text, "evidence_seq": seq})
+    return validated, None
+
+
 def run_agent(
     *,
     task: str,
@@ -51,6 +78,7 @@ def run_agent(
     emit: Emitter | None = None,
     max_steps: int | None = None,
     task_timeout_s: int | None = None,
+    require_claims: bool = False,
 ) -> RunResult:
     limits = policy.limits
     max_steps = int(max_steps or limits.get("max_steps", 20))
@@ -82,6 +110,7 @@ def run_agent(
     ]
 
     step = 0
+    exec_seqs: list[int] = []
     try:
         sandbox.create(task_id, _limits_from(policy))
         info = sandbox.sandbox_info() if callable(getattr(sandbox, "sandbox_info", None)) else {}
@@ -169,10 +198,12 @@ def run_agent(
                     exec_meta = result.pop("_exec", {}) or {}
                     argv = result.pop("_argv", call.arguments.get("command"))
                     cwd = result.pop("_cwd", "/workspace")
-                    record(actor="sandbox", event="sandbox.exec", payload={
+                    exec_event = record(actor="sandbox", event="sandbox.exec", payload={
                         "tool": call.name,
                     }, execution={**exec_meta, "argv": argv, "cwd": cwd,
                                   "host_before": host_before, "host_after": host_after})
+                    exec_seqs.append(exec_event["seq"])
+                    result["evidence_seq"] = exec_event["seq"]
                     killed = exec_meta.get("killed_reason")
                     if killed:
                         record(actor="sandbox", event="resource.limit", payload={
@@ -190,10 +221,29 @@ def run_agent(
                         "bytes": result.get("bytes"),
                     })
                 elif call.name == "finish":
+                    claims, claim_error = _validate_claims(
+                        call.arguments.get("claims"),
+                        exec_seqs,
+                        required=require_claims and bool(exec_seqs),
+                    )
+                    if claim_error:
+                        messages.append({"role": "tool", "tool_call_id": call.id,
+                                         "content": _wrap_output({
+                                             "ok": False,
+                                             "error": "finish rejected: " + claim_error,
+                                             "available_evidence_seqs": exec_seqs,
+                                             "hint": "call finish again with claims citing a real evidence_seq",
+                                         })})
+                        continue
                     record(actor="agent", event="task.completed", payload={
-                        "summary": call.arguments.get("summary", ""), "steps": step,
+                        "summary": call.arguments.get("summary", ""),
+                        "steps": step,
+                        "claims": claims,
+                        "claims_verified": bool(claims),
                     })
-                    return RunResult("completed", summary=str(call.arguments.get("summary", "")), steps=step)
+                    return RunResult("completed",
+                                     summary=str(call.arguments.get("summary", "")),
+                                     steps=step)
 
                 messages.append({"role": "tool", "tool_call_id": call.id,
                                  "content": _wrap_output(result)})
