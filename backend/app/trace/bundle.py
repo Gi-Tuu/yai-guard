@@ -324,12 +324,19 @@ def verify_bundle_dict(
     expected_execution = _execution_from_events(events)
     execution = (bundle.get("execution") or {}).get("results") or []
     if not expected_execution:
-        return _fail(result, "INCOMPLETE", "missing_raw_execution_results")
-    if not execution:
-        return _fail(result, "INCOMPLETE", "missing_bundle_execution_results")
-    if execution != expected_execution:
-        return _fail(result, "FAILED", "execution_metadata_mismatch")
-    result["execution_ok"] = True
+        # A task cancelled before its first command legitimately has no exec
+        # records. That is not missing evidence; it is the recorded outcome.
+        if inferred_status != "cancelled":
+            return _fail(result, "INCOMPLETE", "missing_raw_execution_results")
+        if execution:
+            return _fail(result, "FAILED", "execution_metadata_mismatch")
+        result["execution_ok"] = True
+    else:
+        if not execution:
+            return _fail(result, "INCOMPLETE", "missing_bundle_execution_results")
+        if execution != expected_execution:
+            return _fail(result, "FAILED", "execution_metadata_mismatch")
+        result["execution_ok"] = True
 
     final_hash = (bundle.get("trace") or {}).get("final_hash")
     actual_final_hash = events[-1].get("hash")
