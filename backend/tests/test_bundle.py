@@ -235,5 +235,32 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["reason"], "approval_metadata_mismatch")
 
+    def test_claim_evidence_must_cite_real_exec_seq(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="sandbox", event="sandbox.exec",
+                          execution={"argv": "echo hi", "exit_code": 0})
+        seq = self.store.read()[-1]["seq"]
+        self.store.append(task_id="tk", actor="agent", event="task.completed", payload={
+            "summary": "echo ran", "claims": [{"text": "echo exited 0", "evidence_seq": seq}],
+            "claims_verified": True,
+        })
+        self.store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
+                          payload={"cleanup": {"verified": True}})
+        self.store.seal(self.anchor, hmac_key="k")
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertTrue(result["claims_ok"])
+
+        bundle["trace"]["events"][3]["payload"]["claims"][0]["evidence_seq"] = 999
+        # Event 3 is task.completed in this fixture; its hash no longer matches the chain.
+        tampered = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(tampered["status"], "FAILED")
+
 if __name__ == "__main__":
     unittest.main()

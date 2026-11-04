@@ -16,6 +16,10 @@ A coding agent says “fixed” or “tests pass”. YAI Guard makes that claim 
 2. record the real argv, exit code, output hashes, policy decisions, approval and cleanup;
 3. export an evidence bundle that a reviewer can re-verify offline.
 
+Finish claims are evidence-bound: every `finish` claim must cite a real `sandbox.exec`
+sequence returned by the sandbox; the loop rejects a claim that points at anything else, and
+the evidence verifier rejects a bundle whose claims do not match the raw events.
+
 The reviewer does not need the original API, the model, or the agent process to check the result.
 
 ---

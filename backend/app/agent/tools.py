@@ -74,10 +74,25 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "finish",
-            "description": "Finish the task and report a verifiable summary of what really happened.",
+            "description": "Finish the task with a summary and claims. Every claim must cite the "
+                           "evidence_seq returned by a real run_command call.",
             "parameters": {
                 "type": "object",
-                "properties": {"summary": {"type": "string"}},
+                "properties": {
+                    "summary": {"type": "string"},
+                    "claims": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "evidence_seq": {"type": "integer"},
+                            },
+                            "required": ["text", "evidence_seq"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
                 "required": ["summary"],
                 "additionalProperties": False,
             },

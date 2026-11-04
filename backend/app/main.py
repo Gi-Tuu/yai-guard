@@ -226,6 +226,7 @@ def _run_task(state: TaskState) -> None:
             task_id=state.task_id,
             approver=_approver(state.task_id, state.owner),
             emit=state.events.append,
+            require_claims=os.environ.get("MOCK_MODEL", "0") != "1",
         )
         final_status = result.status
         final_summary = result.summary
