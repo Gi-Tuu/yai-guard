@@ -45,7 +45,7 @@ def _wait(client, task_id: str, headers: dict, timeout_s: float = 10.0) -> dict:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         payload = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        if payload["status"] in ("completed", "failed"):
+        if payload["status"] in ("completed", "failed", "cancelled"):
             return payload
         time.sleep(0.05)
     raise AssertionError(f"task {task_id} did not finish in {timeout_s}s")
@@ -308,6 +308,45 @@ class ApiSecurityTest(unittest.TestCase):
                 _wait(self.client, second["task_id"], TOKEN_A, timeout_s=8)
         finally:
             api._EXEC_SLOTS = old_slots
+
+    # ------------------------------------------------------------ cancellation
+    def test_cancel_terminal_task_is_409(self) -> None:
+        created = self.client.post(
+            "/api/tasks", json={"task": "ls /workspace"}, headers=TOKEN_A
+        ).json()
+        _wait(self.client, created["task_id"], TOKEN_A)
+        res = self.client.post(f"/api/tasks/{created['task_id']}/cancel", headers=TOKEN_A)
+        self.assertEqual(res.status_code, 409)
+
+    def test_cancel_wakes_approval_wait(self) -> None:
+        from app.agent.mock_model import MockModel
+
+        old_ttl = api.POLICY.approval_ttl
+        api.POLICY.approval_ttl = 10
+        try:
+            with mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+                created = self.client.post(
+                    "/api/tasks", json={"task": "approval then cancel"}, headers=TOKEN_A
+                ).json()
+                task_id = created["task_id"]
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if any(key[0] == task_id for key in api.PENDING):
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(any(key[0] == task_id for key in api.PENDING))
+
+                cancelled = self.client.post(f"/api/tasks/{task_id}/cancel", headers=TOKEN_A)
+                self.assertEqual(cancelled.status_code, 200)
+                final = _wait(self.client, task_id, TOKEN_A, timeout_s=8)
+                self.assertEqual(final["status"], "cancelled")
+
+                verify = self.client.get(
+                    f"/api/tasks/{task_id}/trace/verify", headers=TOKEN_A
+                ).json()
+                self.assertEqual(verify["status"], "VERIFIED")
+        finally:
+            api.POLICY.approval_ttl = old_ttl
 
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:

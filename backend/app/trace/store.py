@@ -90,7 +90,7 @@ def verify_trace_file(
     """
     p = Path(path)
     events, error = _read_events(p)
-    terminal = task_status in ("completed", "failed")
+    terminal = task_status in ("completed", "failed", "cancelled")
     result: dict[str, Any] = {
         "ok": False, "status": "UNVERIFIABLE", "reason": error, "events": len(events),
         "chain_ok": False, "sequence_ok": False, "completeness_ok": None,
@@ -124,6 +124,10 @@ def verify_trace_file(
         )
     elif task_status == "failed":
         result["completeness_ok"] = "task.failed" in kinds
+    elif task_status == "cancelled":
+        result["completeness_ok"] = bool(
+            "task.cancelled" in kinds and last == "sandbox.destroy.confirmed"
+        )
 
     anchor_present = bool(anchor_path) and Path(anchor_path).exists()
     if anchor_path is not None and not anchor_present:

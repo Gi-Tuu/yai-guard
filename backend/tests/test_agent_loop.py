@@ -96,6 +96,22 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("sandbox.destroy.unverified", types)
         self.assertNotIn("sandbox.destroy.confirmed", types)
 
+    def test_cancelled_task_records_terminal_event(self) -> None:
+        result = run_agent(
+            task="do something",
+            model=MockModel(),
+            policy=self.policy,
+            sandbox=self.sandbox,
+            trace=self.trace,
+            task_id="tk_cancelled",
+            approver=lambda decision, call: True,
+            should_cancel=lambda: True,
+        )
+        self.assertEqual(result.status, "cancelled")
+        types = [e["event"] for e in self.trace.read()]
+        self.assertIn("task.cancelled", types)
+        self.assertEqual(types[-1], "sandbox.destroy.confirmed")
+
     # --------------------------------------------- 宿主指纹 / 资源超限事件
     def test_host_fingerprints_are_recorded(self) -> None:
         self._run_demo()

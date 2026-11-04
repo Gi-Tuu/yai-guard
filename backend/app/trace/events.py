@@ -36,6 +36,7 @@ EVENT_TYPES = {
     "sandbox.destroy.unverified",
     "task.completed",
     "task.failed",
+    "task.cancelled",
 }
 
 

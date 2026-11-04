@@ -86,6 +86,15 @@ class TaskService:
             self._mark_degraded(exc)
             return None
 
+    def request_cancel(self, task_id: str) -> bool:
+        if self.store is None:
+            return False
+        try:
+            return self.store.request_cancel(task_id)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return False
+
     def mark_waiting(self, task_id: str) -> TaskRecord | None:
         if self.store is None:
             return None

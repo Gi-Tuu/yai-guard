@@ -228,5 +228,16 @@ class TraceIntegrityTest(unittest.TestCase):
                                    anchor_path=self.anchor, hmac_key="k", strict=True)
         self.assertEqual(result["status"], "INCOMPLETE")
 
+    def test_strict_cancelled_trace_is_verified(self) -> None:
+        store = TraceStore(self.trace, "tr_cancelled")
+        store.append(task_id="tk", actor="system", event="task.created", payload={})
+        store.append(task_id="tk", actor="system", event="task.cancelled", payload={})
+        store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
+                     payload={"cleanup": {"verified": True}})
+        store.seal(self.anchor, hmac_key="k")
+        result = verify_trace_file(self.trace, task_status="cancelled",
+                                   anchor_path=self.anchor, hmac_key="k", strict=True)
+        self.assertEqual(result["status"], "VERIFIED")
+
 if __name__ == "__main__":
     unittest.main()
