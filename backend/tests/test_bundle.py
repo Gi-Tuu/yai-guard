@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from app.trace.bundle import build_bundle, verify_bundle_dict  # noqa: E402
+from app.trace.bundle import _claims_check, build_bundle, verify_bundle_dict  # noqa: E402
 from app.trace.store import TraceStore  # noqa: E402
 
 
@@ -243,11 +243,15 @@ class BundleTest(unittest.TestCase):
                         "container_id": "abc123", "image_id": "sha256:img"},
         })
         self.store.append(task_id="tk", actor="sandbox", event="sandbox.exec",
-                          execution={"argv": "echo hi", "exit_code": 0})
+                          execution={"argv": "echo hi", "exit_code": 0,
+                                     "stdout_sha256": "abc"})
         seq = self.store.read()[-1]["seq"]
         self.store.append(task_id="tk", actor="agent", event="task.completed", payload={
-            "summary": "echo ran", "claims": [{"text": "echo exited 0", "evidence_seq": seq}],
+            "summary": "echo ran",
+            "claims": [{"text": "echo exited 0", "evidence_seq": seq,
+                        "evidence_argv": "echo hi", "evidence_stdout_sha256": "abc"}],
             "claims_verified": True,
+            "claim_binding": "argv+sha256",
         })
         self.store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
                           payload={"cleanup": {"verified": True}})
@@ -262,6 +266,21 @@ class BundleTest(unittest.TestCase):
         tampered = verify_bundle_dict(bundle, hmac_key="k")
         self.assertEqual(tampered["status"], "FAILED")
 
+
+    def test_claim_binding_rejects_wrong_argv_or_digest(self) -> None:
+        events = [
+            {"event": "sandbox.exec", "seq": 3,
+             "exec": {"argv": "echo hi", "stdout_sha256": "abc"}},
+            {"event": "task.completed", "payload": {
+                "claims": [{"text": "echo exited 0", "evidence_seq": 3,
+                            "evidence_argv": "echo hi", "evidence_stdout_sha256": "abc"}],
+                "claims_verified": True,
+                "claim_binding": "argv+sha256",
+            }},
+        ]
+        self.assertTrue(_claims_check(events))
+        events[1]["payload"]["claims"][0]["evidence_argv"] = "rm -rf /"
+        self.assertFalse(_claims_check(events))
 
     def test_claims_required_without_claims_fails(self) -> None:
         self.store.append(task_id="tk", actor="user", event="task.created", payload={})

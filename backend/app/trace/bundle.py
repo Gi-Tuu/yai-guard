@@ -79,7 +79,7 @@ def _approvals_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _claims_check(events: list[dict[str, Any]]) -> bool | None:
-    """If task.completed carries claims, every claim must cite a real sandbox.exec seq."""
+    """Claims must cite a real execution; argv+sha256 binding also checks command/output."""
     completed = next((e for e in events if e.get("event") == "task.completed"), None)
     if completed is None:
         return None
@@ -90,16 +90,25 @@ def _claims_check(events: list[dict[str, Any]]) -> bool | None:
         # New traces mark whether claims were required. Old traces stay
         # compatible (None), but a marked task with commands cannot pass.
         return False if claims_required else None
-    exec_seqs = {e.get("seq") for e in events if e.get("event") == "sandbox.exec"}
+    exec_events = {e.get("seq"): (e.get("exec") or {})
+                   for e in events if e.get("event") == "sandbox.exec"}
     if not isinstance(claims, list) or not claims:
         return False
+    binding = payload.get("claim_binding")
     for claim in claims:
         if not isinstance(claim, dict):
             return False
         if not str(claim.get("text") or "").strip():
             return False
-        if claim.get("evidence_seq") not in exec_seqs:
+        seq = claim.get("evidence_seq")
+        if seq not in exec_events:
             return False
+        if binding == "argv+sha256":
+            meta = exec_events[seq]
+            if claim.get("evidence_argv") != meta.get("argv"):
+                return False
+            if claim.get("evidence_stdout_sha256") != meta.get("stdout_sha256"):
+                return False
     return True
 
 
