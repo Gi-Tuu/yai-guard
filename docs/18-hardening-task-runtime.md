@@ -3,12 +3,12 @@
 > 状态：WP1–WP6、WP9（queued 重启重排）与 interrupted 证据已实现；生产使用 `TASK_STORE=sqlite`。  
 > 目标：为取消、队列、审批、重启恢复、周期性孤儿回收和证据签名升级提供单一任务事实源。
 >
-> 单写者说明（当前实现）：app 进程通过 `artifacts/task-runtime.lock` 的 `flock` 独占运行；任务认领使用
-> `mark_running` 的 CAS，而不是多进程 `claim_next`。文档后文关于 `claim_next`/多 worker 的部分是设计历史，
-> 当前代码已移除该未使用入口；多 worker 横向扩展仍未实现。
+> 单写者说明：默认 `single` 模式通过 `artifacts/task-runtime.lock` 的 `flock` 独占运行；任务认领使用
+> `mark_running` 的 CAS。`TASK_RUNTIME_MODE=multi` 模式使用 `claim_next`、DB 队列、DB 事件/审批和
+> 每进程 worker，多个 uvicorn worker 可共享同一 SQLite；多进程迁移由独立 flock 串行化。
 >
-> Phase 2 更新：`TASK_RUNTIME_MODE=multi` 已新增 DB 队列、`claim_next`、每进程 worker、DB 事件表与
-> DB 审批路径；默认仍是 single 模式，生产切换前需单独验收。
+> Phase 2 更新：multi 模式已实现并线上验收；rate limit / SSE 槽在 multi 下用 SQLite 全局配额，
+> lease 恢复由 maintenance leader 执行并立即触发容器清理。
 
 ## 0. 当前实现状态（2026-11-04）
 

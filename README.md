@@ -82,11 +82,12 @@ runtime:
 - `TASK_RUNTIME_MODE=multi` (requires `TASK_STORE=sqlite`) switches to a DB queue:
   each process claims tasks atomically, `TASK_WORKERS` controls local workers,
   events and approvals live in SQLite so API/SSE can be served by any worker;
-  the default remains the conservative single-writer mode;
+  rate limits and SSE connection leases are also global in this mode;
 - terminal state is retained for `TASK_RETENTION_DAYS` (default 30, `0` disables);
-  scheduled cleanup removes DB rows, approvals, traces and anchors;
-- schema migrations are ordered and versioned (`PRAGMA user_version`); v2 adds
-  `updated_at`, applied to existing v1 databases on startup.
+  scheduled cleanup removes DB rows, approvals, events, traces and anchors;
+- schema migrations are ordered and versioned (`PRAGMA user_version`); v4 adds
+  `updated_at`, durable events, rate hits and SSE leases; migrations are
+  serialized across workers with a file lock.
 
 Approval and task transitions are written through `TaskService`; a SQLite failure is
 surfaced as degraded health instead of breaking task creation.
