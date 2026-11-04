@@ -48,6 +48,11 @@ class FakeSandbox:
     def list_containers(self) -> list[dict]:
         return []
 
+    def remove_orphan(self, task_id: str) -> dict:
+        self._tasks.discard(task_id)
+        return {"ok": True, "verified": True, "backend": "fake",
+                "container": f"yaig-{task_id}"}
+
     def host_fingerprint(self) -> dict:
         return dict(self.host, sandbox_hostname=f"yaig-sandbox-{next(iter(self._tasks), 'idle')}")
 

@@ -84,7 +84,10 @@ def reap_orphans(
             result["would_remove"].append({"task_id": task_id, "name": name, "reason": reason})
             continue
         try:
-            cleanup = sandbox.destroy(task_id)
+            if hasattr(sandbox, "remove_orphan"):
+                cleanup = sandbox.remove_orphan(task_id)
+            else:
+                cleanup = sandbox.destroy(task_id)
         except Exception as exc:  # noqa: BLE001
             result["errors"].append(f"{task_id}: {type(exc).__name__}: {exc}")
             continue

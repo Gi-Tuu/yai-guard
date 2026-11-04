@@ -74,6 +74,12 @@ class RemoteSandbox:
             killed_reason=payload.get("killed_reason"),
         )
 
+    def remove_orphan(self, task_id: str) -> dict:
+        payload = self._request("DELETE", f"/v1/containers/{task_id}")
+        if payload.get("verified") is not True:
+            raise RuntimeError(f"orphan removal not verified: {payload}")
+        return payload
+
     def list_containers(self) -> list[dict]:
         payload = self._request("GET", "/v1/containers")
         return list(payload.get("containers", []))
