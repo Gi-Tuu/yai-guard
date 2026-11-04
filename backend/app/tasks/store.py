@@ -68,6 +68,17 @@ CREATE TABLE IF NOT EXISTS approvals (
 """
 
 
+def _migration_v1(conn: sqlite3.Connection) -> None:
+    conn.execute(_TASKS)
+    conn.execute(_APPROVALS)
+    conn.executescript(_INDEXES)
+
+
+# Ordered migration steps. Add a new function and bump SCHEMA_VERSION for any
+# future schema change; never edit an already-released step.
+_MIGRATIONS = {1: _migration_v1}
+
+
 class TaskAlreadyExists(RuntimeError):
     pass
 
@@ -105,11 +116,12 @@ class TaskStore:
                 raise RuntimeError(
                     f"task store schema {version} is newer than supported {SCHEMA_VERSION}"
                 )
-            if version < 1:
-                self._conn.execute(_TASKS)
-                self._conn.execute(_APPROVALS)
-                self._conn.executescript(_INDEXES)
-            self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            for target in range(version + 1, SCHEMA_VERSION + 1):
+                migration = _MIGRATIONS.get(target)
+                if migration is None:
+                    raise RuntimeError(f"missing task store migration {target}")
+                migration(self._conn)
+                self._conn.execute(f"PRAGMA user_version={target}")
 
     def close(self) -> None:
         with self._lock:
@@ -341,6 +353,61 @@ class TaskStore:
             error=error,
             expected_version=expected_version,
         )
+
+    def reconcile_terminal(
+        self,
+        task_id: str,
+        status: TaskStatus | str,
+        *,
+        summary: str = "",
+        error: str | None = None,
+    ) -> TaskRecord | None:
+        """Repair the crash window where trace is terminal but DB was interrupted."""
+        destination = TaskStatus(status)
+        if destination not in (TaskStatus.COMPLETED, TaskStatus.FAILED,
+                               TaskStatus.CANCELLED):
+            raise ValueError(f"invalid reconciliation status: {destination}")
+        finished = time.time()
+        with self._lock, self._conn:
+            current = self._get_locked(task_id)
+            if current is None or current.status is not TaskStatus.INTERRUPTED:
+                return current
+            self._conn.execute(
+                "UPDATE tasks SET status = ?, summary = ?, error = ?, "
+                "finished_at = ?, lease_until = NULL, worker_id = NULL, "
+                "version = version + 1 WHERE id = ? AND status = ?",
+                (
+                    destination.value, summary, error, finished, task_id,
+                    TaskStatus.INTERRUPTED.value,
+                ),
+            )
+            return self._get_locked(task_id)
+
+    def list_terminal_before(self, cutoff: float) -> list[TaskRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status IN (?, ?, ?, ?) "
+                "AND COALESCE(finished_at, created_at) < ?",
+                (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value,
+                 TaskStatus.CANCELLED.value, TaskStatus.INTERRUPTED.value, cutoff),
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
+    def prune_terminal_before(self, cutoff: float) -> list[TaskRecord]:
+        """Delete terminal tasks and their approvals older than cutoff."""
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status IN (?, ?, ?, ?) "
+                "AND COALESCE(finished_at, created_at) < ?",
+                (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value,
+                 TaskStatus.CANCELLED.value, TaskStatus.INTERRUPTED.value, cutoff),
+            ).fetchall()
+            records = [self._record(row) for row in rows]
+            for record in records:
+                self._conn.execute("DELETE FROM approvals WHERE task_id = ?",
+                                   (record.id,))
+                self._conn.execute("DELETE FROM tasks WHERE id = ?", (record.id,))
+            return records
 
     def recover_interrupted(
         self,

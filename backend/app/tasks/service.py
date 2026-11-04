@@ -157,6 +157,36 @@ class TaskService:
             self._mark_degraded(exc)
             return None
 
+    def reconcile_terminal(self, task_id: str, status: TaskStatus | str, *,
+                           summary: str = "", error: str | None = None) -> TaskRecord | None:
+        if self.store is None:
+            return None
+        try:
+            return self.store.reconcile_terminal(
+                task_id, status, summary=summary, error=error,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return None
+
+    def prune_terminal_before(self, cutoff: float) -> list[TaskRecord]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.prune_terminal_before(cutoff)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return []
+
+    def list_terminal_before(self, cutoff: float) -> list[TaskRecord]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.list_terminal_before(cutoff)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return []
+
     # -------------------------------------------------------------- approvals
     def create_approval(self, *, task_id: str, call_id: str, owner: str,
                         ttl_s: float) -> bool:
