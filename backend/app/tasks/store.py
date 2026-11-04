@@ -472,6 +472,8 @@ class TaskStore:
             for record in records:
                 self._conn.execute("DELETE FROM approvals WHERE task_id = ?",
                                    (record.id,))
+                self._conn.execute("DELETE FROM task_events WHERE task_id = ?",
+                                   (record.id,))
                 self._conn.execute("DELETE FROM tasks WHERE id = ?", (record.id,))
             return records
 

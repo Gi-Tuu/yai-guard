@@ -973,6 +973,9 @@ def create_task(body: dict[str, Any], request: Request,
         raise HTTPException(status_code=413, detail="task is too large")
     _enforce_rate_limit(request)
     _prune_tasks()
+    if TASK_RUNTIME_MODE == "multi" and not TASK_SERVICE.enabled:
+        raise HTTPException(status_code=503,
+                            detail="multi-worker mode requires TASK_STORE=sqlite")
     if (TASK_RUNTIME_MODE == "single" and TASK_SERVICE.enabled
             and not _RUNTIME_LOCK_OK):
         raise HTTPException(status_code=503,
