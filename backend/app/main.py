@@ -285,11 +285,20 @@ def _client_ip(request: Request) -> str:
 
 
 def _enforce_rate_limit(request: Request) -> None:
-    """每 IP 令牌桶（滑动窗口）。<=0 表示关闭，仅内部/测试使用。"""
+    """每 IP 滑动窗口。多 worker 模式用 SQLite 做全局配额。"""
     limit = _rate_limit_per_min()
     if limit <= 0:
         return
     ip = _client_ip(request)
+    if TASK_RUNTIME_MODE == "multi" and TASK_SERVICE.enabled:
+        retry = TASK_SERVICE.rate_limit(ip, limit=limit, window_s=RATE_WINDOW_S)
+        if retry > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"rate limit exceeded ({limit} req/min)",
+                headers={"Retry-After": str(retry)},
+            )
+        return
     now = time.monotonic()
     with _RATE_LOCK:
         hits = [t for t in _RATE_HITS.get(ip, []) if now - t < RATE_WINDOW_S]
@@ -719,6 +728,7 @@ def _try_maintenance_lock() -> bool:
 
 
 def _multi_recovery_loop() -> None:
+    next_prune = 0.0
     while True:
         time.sleep(max(5, int(os.environ.get("MULTI_RECOVERY_INTERVAL_S", "15"))))
         if not _try_maintenance_lock():
@@ -727,6 +737,11 @@ def _multi_recovery_loop() -> None:
             TASK_SERVICE.recover_expired()
             TASK_SERVICE.expire_approvals_before(time.time())
             _record_interrupted_events()
+            if time.time() >= next_prune:
+                _prune_old_state()
+                next_prune = time.time() + max(
+                    60, int(os.environ.get("RETENTION_INTERVAL_S", "21600")),
+                )
         except Exception:  # noqa: BLE001
             pass
 
@@ -880,10 +895,6 @@ def _reap_stale_sandboxes() -> None:
                                  name=f"multi-worker-{index}", daemon=True).start()
             threading.Thread(target=_multi_recovery_loop, name="multi-recovery",
                              daemon=True).start()
-            if os.environ.get("TASK_RETENTION_DAYS", "30") != "0":
-                _RETENTION_STARTED = True
-                threading.Thread(target=_retention_loop, name="task-retention",
-                                 daemon=True).start()
         return
     if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
         return
@@ -1072,7 +1083,13 @@ def get_task(task_id: str, principal: str = Depends(_require_principal)) -> dict
 @app.get("/api/tasks/{task_id}/events")
 def stream_events(task_id: str, principal: str = Depends(_require_principal)) -> StreamingResponse:
     state = _owned_task(task_id, principal)
-    if not _SSE_SLOTS.acquire(blocking=False):
+    sse_token: str | None = None
+    if TASK_RUNTIME_MODE == "multi" and TASK_SERVICE.enabled:
+        sse_token = uuid.uuid4().hex
+        limit = int(os.environ.get("SSE_MAX_CONNECTIONS", "8"))
+        if not TASK_SERVICE.acquire_sse(sse_token, limit=limit, ttl_s=300):
+            raise HTTPException(status_code=429, detail="too many active SSE streams")
+    elif not _SSE_SLOTS.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="too many active SSE streams")
 
     def generate():
@@ -1099,10 +1116,15 @@ def stream_events(task_id: str, principal: str = Depends(_require_principal)) ->
                 # 心跳：防止 Caddy/浏览器把空闲连接判死（SSE 重连会丢开区间的事件）
                 if time.monotonic() - last_ping >= 15.0:
                     last_ping = time.monotonic()
+                    if sse_token is not None:
+                        TASK_SERVICE.renew_sse(sse_token)
                     yield ": ping\n\n"
                 time.sleep(0.2)
         finally:
-            _SSE_SLOTS.release()
+            if sse_token is not None:
+                TASK_SERVICE.release_sse(sse_token)
+            else:
+                _SSE_SLOTS.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

@@ -23,7 +23,7 @@ from .models import (
     can_transition,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _TASKS = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -82,6 +82,18 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task_seq
     ON task_events(task_id, seq);
 """
 
+_LIMITS = """
+CREATE TABLE IF NOT EXISTS rate_hits (
+    key  TEXT NOT NULL,
+    ts   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_hits_key_ts ON rate_hits(key, ts);
+CREATE TABLE IF NOT EXISTS sse_leases (
+    token       TEXT PRIMARY KEY,
+    created_at  REAL NOT NULL
+);
+"""
+
 
 def _migration_v1(conn: sqlite3.Connection) -> None:
     conn.execute(_TASKS)
@@ -102,9 +114,14 @@ def _migration_v3(conn: sqlite3.Connection) -> None:
     conn.executescript(_EVENTS)
 
 
+def _migration_v4(conn: sqlite3.Connection) -> None:
+    conn.executescript(_LIMITS)
+
+
 # Ordered migration steps. Add a new function and bump SCHEMA_VERSION for any
 # future schema change; never edit an already-released step.
-_MIGRATIONS = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3}
+_MIGRATIONS = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3,
+               4: _migration_v4}
 
 
 class TaskAlreadyExists(RuntimeError):
@@ -658,6 +675,51 @@ class TaskStore:
                 (task_id,),
             ).fetchone()
         return int(row["n"]) if row else 0
+
+    def rate_limit(self, key: str, *, limit: int, window_s: float,
+                   now: float | None = None) -> int:
+        """Return 0 when allowed, otherwise Retry-After seconds."""
+        current = time.time() if now is None else now
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM rate_hits WHERE key = ? AND ts < ?",
+                (key, current - window_s),
+            )
+            rows = self._conn.execute(
+                "SELECT ts FROM rate_hits WHERE key = ? ORDER BY ts",
+                (key,),
+            ).fetchall()
+            if len(rows) >= limit:
+                retry = max(1, int(window_s - (current - float(rows[0]["ts"]))))
+                return retry
+            self._conn.execute("INSERT INTO rate_hits (key, ts) VALUES (?, ?)",
+                               (key, current))
+            return 0
+
+    def acquire_sse(self, token: str, *, limit: int, ttl_s: float,
+                    now: float | None = None) -> bool:
+        current = time.time() if now is None else now
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM sse_leases WHERE created_at < ?",
+                               (current - ttl_s,))
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM sse_leases").fetchone()
+            if int(row["n"]) >= limit:
+                return False
+            self._conn.execute(
+                "INSERT OR REPLACE INTO sse_leases (token, created_at) VALUES (?, ?)",
+                (token, current),
+            )
+            return True
+
+    def renew_sse(self, token: str, *, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE sse_leases SET created_at = ? WHERE token = ?",
+                               (current, token))
+
+    def release_sse(self, token: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM sse_leases WHERE token = ?", (token,))
 
     # ------------------------------------------------------------------ stats
     def count_by_status(self) -> dict[str, int]:

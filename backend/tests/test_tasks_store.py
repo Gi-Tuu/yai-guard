@@ -201,12 +201,12 @@ class TaskStoreTest(unittest.TestCase):
 
     def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
         version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(int(version), 3)
+        self.assertEqual(int(version), 4)
         self.store.close()
         reopened = TaskStore(self.path)
         try:
             self.assertEqual(
-                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 3,
+                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 4,
             )
         finally:
             reopened.close()
@@ -224,13 +224,15 @@ class TaskStoreTest(unittest.TestCase):
         migrated = TaskStore(v1_path)
         try:
             self.assertEqual(
-                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 3,
+                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 4,
             )
             columns = {row[1] for row in migrated._conn.execute("PRAGMA table_info(tasks)")}
             self.assertIn("updated_at", columns)
             tables = {row[0] for row in migrated._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("task_events", tables)
+            self.assertIn("rate_hits", tables)
+            self.assertIn("sse_leases", tables)
             migrated.create_task(task_id="new", trace_id="tr_new", owner="u", prompt="x")
             self.assertIsNotNone(migrated.get_task("new"))
         finally:
@@ -245,6 +247,17 @@ class TaskStoreTest(unittest.TestCase):
         events = self.store.list_events("tk1", after_seq=1)
         self.assertEqual([event["seq"] for event in events], [2])
         self.assertEqual(events[0]["event"], "agent.step")
+
+    def test_global_rate_and_sse_leases(self) -> None:
+        self.assertEqual(self.store.rate_limit("ip", limit=2, window_s=60, now=100), 0)
+        self.assertEqual(self.store.rate_limit("ip", limit=2, window_s=60, now=101), 0)
+        self.assertGreater(self.store.rate_limit("ip", limit=2, window_s=60, now=102), 0)
+        self.assertEqual(self.store.rate_limit("ip", limit=2, window_s=60, now=200), 0)
+        self.assertTrue(self.store.acquire_sse("a", limit=2, ttl_s=300, now=100))
+        self.assertTrue(self.store.acquire_sse("b", limit=2, ttl_s=300, now=100))
+        self.assertFalse(self.store.acquire_sse("c", limit=2, ttl_s=300, now=100))
+        self.store.release_sse("a")
+        self.assertTrue(self.store.acquire_sse("c", limit=2, ttl_s=300, now=101))
 
 
 if __name__ == "__main__":

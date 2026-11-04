@@ -295,6 +295,40 @@ class TaskService:
             self._mark_degraded(exc)
             return 0
 
+    def rate_limit(self, key: str, *, limit: int, window_s: float) -> int:
+        if self.store is None:
+            return 0
+        try:
+            return self.store.rate_limit(key, limit=limit, window_s=window_s)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return 0
+
+    def acquire_sse(self, token: str, *, limit: int, ttl_s: float) -> bool:
+        if self.store is None:
+            return False
+        try:
+            return self.store.acquire_sse(token, limit=limit, ttl_s=ttl_s)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return False
+
+    def renew_sse(self, token: str) -> None:
+        if self.store is None:
+            return
+        try:
+            self.store.renew_sse(token)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+
+    def release_sse(self, token: str) -> None:
+        if self.store is None:
+            return
+        try:
+            self.store.release_sse(token)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+
     def queued_tasks(self) -> list[TaskRecord]:
         if self.store is None:
             return []
