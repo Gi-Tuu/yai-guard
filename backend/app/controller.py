@@ -26,6 +26,7 @@ app = FastAPI(title="YAI Guard Sandbox Controller", version="0.1.0")
 _TOKEN = os.environ.get("SANDBOX_TOKEN", "")
 _IMAGE = os.environ.get("SANDBOX_IMAGE", "yaiguard/sandbox-py:1.0")
 _RUNTIME = os.environ.get("SANDBOX_RUNTIME") or "runc"
+_MAX_FILE_BYTES = int(os.environ.get("SANDBOX_MAX_FILE_BYTES", "2097152"))
 _backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
 _BACKEND_LOCK = threading.Lock()
 _BACKENDS: dict[str, DockerSandbox] = {}
@@ -48,15 +49,29 @@ def _auth(token: str | None) -> None:
 
 @app.get("/healthz")
 def healthz() -> JSONResponse:
-    payload: dict[str, Any] = {
-        "ok": bool(_STARTUP.get("ok")),
-        "runtime": _RUNTIME,
-        "image": _IMAGE,
-        "daemon": _STARTUP.get("daemon"),
-        "image_status": _STARTUP.get("image"),
-        "error": _STARTUP.get("error"),
-    }
-    return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
+    # Re-check on every probe: controller startup is long-lived and Docker can
+    # disappear after boot. A static startup snapshot would keep reporting green.
+    try:
+        ready = _backend.ensure_ready()
+        payload: dict[str, Any] = {
+            "ok": True,
+            "runtime": ready.get("runtime"),
+            "image": _IMAGE,
+            "daemon": ready.get("daemon"),
+            "image_status": ready.get("image"),
+            "error": None,
+        }
+        return JSONResponse(payload, status_code=200)
+    except Exception as exc:  # noqa: BLE001 - health must report the failure
+        payload = {
+            "ok": False,
+            "runtime": _RUNTIME,
+            "image": _IMAGE,
+            "daemon": _STARTUP.get("daemon"),
+            "image_status": _STARTUP.get("image"),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        return JSONResponse(payload, status_code=503)
 
 
 @app.get("/v1/host/snapshot")
@@ -117,8 +132,12 @@ def create(task_id: str, limits: dict[str, Any] | None = None,
     with _BACKEND_LOCK:
         if task_id in _BACKENDS:
             raise HTTPException(status_code=409, detail="task_id already exists")
-        backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
-        backend.create(task_id, parsed)
+    backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
+    backend.create(task_id, parsed)
+    with _BACKEND_LOCK:
+        if task_id in _BACKENDS:
+            backend.destroy(task_id)
+            raise HTTPException(status_code=409, detail="task_id already exists")
         _BACKENDS[task_id] = backend
         info = backend.sandbox_info()
     return {
@@ -159,6 +178,9 @@ async def put_file(task_id: str, path: str, request: Request,
                    x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
     data = await request.body()
+    if len(data) > _MAX_FILE_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"file exceeds {_MAX_FILE_BYTES} bytes")
     with _BACKEND_LOCK:
         backend = _BACKENDS.get(task_id)
     if backend is None:

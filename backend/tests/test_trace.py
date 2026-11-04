@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from app.trace import TraceStore, new_trace_id, verify_file  # noqa: E402
-from app.trace.store import verify_trace_file  # noqa: E402
+from app.trace.store import TraceError, verify_trace_file  # noqa: E402
 
 
 class TraceStoreTest(unittest.TestCase):
@@ -148,6 +148,17 @@ class TraceIntegrityTest(unittest.TestCase):
                                    anchor_path=self.anchor)
         self.assertEqual(result["status"], "PENDING")
         self.assertFalse(result["ok"])
+
+    def test_stale_trace_writer_is_rejected(self) -> None:
+        first = TraceStore(self.trace, "tr_race")
+        first.append(task_id="tk", actor="system", event="task.created", payload={})
+        recovery = TraceStore(self.trace, "tr_race")
+        recovery.append(task_id="tk", actor="system", event="task.interrupted",
+                        payload={})
+        with self.assertRaises(TraceError):
+            first.append(task_id="tk", actor="agent", event="task.completed",
+                         payload={})
+        self.assertEqual(len(self.trace.read_text(encoding="utf-8").splitlines()), 2)
 
     def test_empty_file_is_invalid(self) -> None:
         self.trace.write_text("", encoding="utf-8")

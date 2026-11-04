@@ -251,8 +251,12 @@ class TaskStoreTest(unittest.TestCase):
     def test_global_rate_and_sse_leases(self) -> None:
         self.assertEqual(self.store.rate_limit("ip", limit=2, window_s=60, now=100), 0)
         self.assertEqual(self.store.rate_limit("ip", limit=2, window_s=60, now=101), 0)
+        self.assertEqual(self.store.rate_limit("other", limit=2, window_s=60, now=101), 0)
         self.assertGreater(self.store.rate_limit("ip", limit=2, window_s=60, now=102), 0)
         self.assertEqual(self.store.rate_limit("ip", limit=2, window_s=60, now=200), 0)
+        keys = {row[0] for row in self.store._conn.execute(
+            "SELECT DISTINCT key FROM rate_hits")}
+        self.assertEqual(keys, {"ip"})
         self.assertTrue(self.store.acquire_sse("a", limit=2, ttl_s=300, now=100))
         self.assertTrue(self.store.acquire_sse("b", limit=2, ttl_s=300, now=100))
         self.assertFalse(self.store.acquire_sse("c", limit=2, ttl_s=300, now=100))

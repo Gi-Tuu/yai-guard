@@ -66,6 +66,28 @@ class BundleTest(unittest.TestCase):
         result = verify_bundle_dict(bundle)
         self.assertEqual(result["status"], "INCOMPLETE")
 
+    def test_completed_but_unverified_cleanup_is_failed_and_incomplete(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="sandbox", event="sandbox.exec",
+                          execution={"argv": "echo hi", "exit_code": 0,
+                                     "stdout_sha256": "a", "stderr_sha256": "b"})
+        self.store.append(task_id="tk", actor="agent", event="task.completed",
+                          payload={"summary": "lost cleanup"})
+        self.store.append(task_id="tk", actor="system",
+                          event="sandbox.destroy.unverified",
+                          payload={"cleanup": {"verified": False, "error": "simulated"}})
+        self.store.seal(self.anchor, hmac_key="k")
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(bundle["task"]["status"], "failed")
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertFalse(bundle["lifecycle"]["confirmed"])
+
     def test_missing_anchor_is_incomplete(self) -> None:
         self._make(anchor=False)
         bundle = build_bundle(self.trace)

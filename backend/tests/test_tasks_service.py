@@ -109,6 +109,38 @@ class TaskServiceTest(unittest.TestCase):
             task_id="tk", trace_id="tr", owner="u", prompt="ls",
         ))
 
+    def test_degraded_flag_recovers_after_successful_probe(self) -> None:
+        from unittest import mock
+
+        service = TaskService.from_path(self.path)
+        try:
+            service._mark_degraded(RuntimeError("transient"))
+            with mock.patch.object(service.store, "count_by_status",
+                                   side_effect=RuntimeError("still down")):
+                self.assertFalse(service.health()["ok"])
+            recovered = service.health()
+            self.assertTrue(recovered["ok"])
+            self.assertFalse(recovered["degraded"])
+            self.assertIsNone(recovered["error"])
+        finally:
+            service.close()
+
+    def test_lease_config_is_used_on_claim_and_resume(self) -> None:
+        import time
+
+        service = TaskService.from_path(self.path)
+        try:
+            service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+            before = time.time()
+            assert service.mark_running("tk", lease_seconds=2) is not None
+            self.assertLessEqual(service.get_record("tk").lease_until, before + 3)
+            self.assertIsNotNone(service.mark_waiting("tk"))
+            assert service.mark_resumed("tk", lease_seconds=3) is not None
+            self.assertLessEqual(service.get_record("tk").lease_until,
+                                 time.time() + 4)
+        finally:
+            service.close()
+
     def test_close_memory_is_safe(self) -> None:
         TaskService().close()
 

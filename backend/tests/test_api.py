@@ -466,6 +466,59 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertIn({"task_id": "q1", "reason": "already_dispatched"},
                           again["skipped"])
 
+    def test_rate_limit_falls_back_when_global_quota_store_fails(self) -> None:
+        from starlette.requests import Request
+        from fastapi import HTTPException
+
+        class DownQuota:
+            enabled = True
+            degraded = False
+
+            def rate_limit(self, *_args, **_kwargs):
+                self.degraded = True
+                return 0
+
+        request = Request({
+            "type": "http", "method": "POST", "path": "/api/tasks",
+            "headers": [(b"x-forwarded-for", b"198.51.100.77")],
+            "client": ("198.51.100.77", 1234),
+        })
+        old_limit = os.environ.get("RATE_LIMIT_PER_MIN")
+        os.environ["RATE_LIMIT_PER_MIN"] = "1"
+        with security._RATE_LOCK:
+            security._RATE_HITS.clear()
+        try:
+            with mock.patch.object(settings, "TASK_RUNTIME_MODE", "multi"), \
+                    mock.patch.object(settings, "TASK_SERVICE", DownQuota()):
+                security._enforce_rate_limit(request)
+                with self.assertRaises(HTTPException) as blocked:
+                    security._enforce_rate_limit(request)
+                self.assertEqual(blocked.exception.status_code, 429)
+        finally:
+            if old_limit is None:
+                os.environ.pop("RATE_LIMIT_PER_MIN", None)
+            else:
+                os.environ["RATE_LIMIT_PER_MIN"] = old_limit
+            with security._RATE_LOCK:
+                security._RATE_HITS.clear()
+
+    def test_db_create_failure_returns_503_without_queued_state(self) -> None:
+        class BrokenCreate:
+            enabled = True
+
+            def create(self, **kwargs):
+                return None
+
+        before = len(task_state.TASKS)
+        with mock.patch.object(settings, "TASK_SERVICE", BrokenCreate()):
+            res = self.client.post(
+                "/api/tasks", json={"task": "must not be silently queued"},
+                headers=TOKEN_A,
+            )
+        self.assertEqual(res.status_code, 503)
+        self.assertIn("task store unavailable", res.json()["detail"])
+        self.assertEqual(len(task_state.TASKS), before)
+
     def test_maintenance_reap_requires_admin_token(self) -> None:
         old_admin = os.environ.pop("ADMIN_TOKEN", None)
         old_admins = os.environ.pop("ADMIN_TOKENS", None)
@@ -493,7 +546,7 @@ class ApiSecurityTest(unittest.TestCase):
             enabled = True
 
             def create(self, **kwargs):
-                return None
+                return SimpleNamespace(id=kwargs["task_id"])
 
             def queued_tasks(self):
                 return [SimpleNamespace(id=self.task_id, trace_id="tr", prompt="x",

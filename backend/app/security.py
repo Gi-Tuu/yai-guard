@@ -89,7 +89,9 @@ def _enforce_rate_limit(request: Request) -> None:
     if limit <= 0:
         return
     ip = _client_ip(request)
-    if settings.TASK_RUNTIME_MODE == "multi" and settings.TASK_SERVICE.enabled:
+    if (settings.TASK_RUNTIME_MODE == "multi"
+            and settings.TASK_SERVICE.enabled
+            and not settings.TASK_SERVICE.degraded):
         retry = settings.TASK_SERVICE.rate_limit(
             ip, limit=limit, window_s=settings.RATE_WINDOW_S,
         )
@@ -99,7 +101,10 @@ def _enforce_rate_limit(request: Request) -> None:
                 detail=f"rate limit exceeded ({limit} req/min)",
                 headers={"Retry-After": str(retry)},
             )
-        return
+        if not settings.TASK_SERVICE.degraded:
+            return
+        # DB quota failed; fall through to the in-process limiter rather than
+        # failing open for the rest of the process lifetime.
     now = time.monotonic()
     with _RATE_LOCK:
         hits = [t for t in _RATE_HITS.get(ip, []) if now - t < settings.RATE_WINDOW_S]

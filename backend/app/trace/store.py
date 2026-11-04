@@ -8,13 +8,14 @@
 # 所有操作」——后者依靠 Agent 只通过 TraceStore 写审计这一代码约束。
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .events import build_event, utc_now_iso
 from .redact import redact
@@ -24,6 +25,35 @@ GENESIS = "sha256:" + "0" * 64
 
 def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+@contextlib.contextmanager
+def _locked_trace_file(path: Path) -> Iterator[Any]:
+    """Serialize appends across process-level TraceStore instances.
+
+    A lease can expire while the original worker is merely paused. The recovery
+    leader must not be able to interleave a second writer and corrupt seq/hash.
+    The lock file is the trace file itself; Windows has no fcntl, so the
+    single-process tests remain unchanged.
+    """
+    handle = open(path, "a+", encoding="utf-8")
+    locked = False
+    try:
+        try:
+            import fcntl
+        except ImportError:
+            yield handle
+            return
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        locked = True
+        yield handle
+    finally:
+        if locked:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001 - closing still releases the lock
+                pass
+        handle.close()
 
 
 def _read_events(path: Path) -> tuple[list[dict[str, Any]], str | None]:
@@ -127,7 +157,10 @@ def verify_trace_file(
             "task.completed" in kinds and last in ("sandbox.destroy.confirmed", "sandbox.destroyed")
         )
     elif task_status == "failed":
-        result["completeness_ok"] = "task.failed" in kinds
+        result["completeness_ok"] = bool(
+            "task.failed" in kinds
+            or ("task.completed" in kinds and last == "sandbox.destroy.unverified")
+        )
     elif task_status == "cancelled":
         result["completeness_ok"] = bool(
             "task.cancelled" in kinds
@@ -236,6 +269,21 @@ class TraceStore:
             self._resume()
 
     # ---------------------------------------------------------------- append
+    def _assert_current(self) -> None:
+        """Refuse to append/seal from a stale instance after another writer."""
+        events = self.read()
+        if not events:
+            if self._seq != 0 or self._prev != GENESIS:
+                raise TraceError(
+                    f"trace was truncated by another writer: {self.path}"
+                )
+            return
+        last = events[-1]
+        if last.get("seq") != self._seq or last.get("hash") != self._prev:
+            raise TraceError(
+                f"trace changed by another writer at seq={last.get('seq')}: {self.path}"
+            )
+
     def append(
         self,
         *,
@@ -247,31 +295,34 @@ class TraceStore:
         execution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
-            body = build_event(
-                trace_id=self.trace_id,
-                task_id=task_id,
-                actor=actor,
-                event=event,
-                payload=payload,
-                policy=policy,
-                execution=execution,
-            )
-            body["seq"] = self._seq + 1
-            body["ts"] = utc_now_iso()
-            body["prev_hash"] = self._prev
-            body = redact(body)
+            with _locked_trace_file(self.path) as handle:
+                self._assert_current()
+                body = build_event(
+                    trace_id=self.trace_id,
+                    task_id=task_id,
+                    actor=actor,
+                    event=event,
+                    payload=payload,
+                    policy=policy,
+                    execution=execution,
+                )
+                body["seq"] = self._seq + 1
+                body["ts"] = utc_now_iso()
+                body["prev_hash"] = self._prev
+                body = redact(body)
 
-            digest = hashlib.sha256((self._prev + canonical_json(body)).encode("utf-8")).hexdigest()
-            record = dict(body)
-            record["hash"] = "sha256:" + digest
+                digest = hashlib.sha256(
+                    (self._prev + canonical_json(body)).encode("utf-8")
+                ).hexdigest()
+                record = dict(body)
+                record["hash"] = "sha256:" + digest
 
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(canonical_json(record) + "\n")
-                fh.flush()
+                handle.write(canonical_json(record) + "\n")
+                handle.flush()
 
-            self._seq = record["seq"]
-            self._prev = record["hash"]
-            return record
+                self._seq = record["seq"]
+                self._prev = record["hash"]
+                return record
 
     # ------------------------------------------------------------------ read
     def read(self) -> list[dict[str, Any]]:
@@ -314,33 +365,35 @@ class TraceStore:
         锚点与 trace 分开存放，用于检测“末尾被截断/删除”这类链本身仍然自洽的篡改。
         HMAC 只有在密钥不被攻击者拿到时才有意义——这是信任边界，不是绝对保证。
         """
-        events = self.read()
-        payload: dict[str, Any] = {
-            "schema_version": "1.0",
-            "trace_id": self.trace_id,
-            "events": len(events),
-            "final_hash": events[-1]["hash"] if events else GENESIS,
-            "sealed_at": utc_now_iso(),
-        }
-        if ed25519_private_key is not None:
-            from .signing import sign_anchor
+        with self._lock, _locked_trace_file(self.path):
+            self._assert_current()
+            events = self.read()
+            payload: dict[str, Any] = {
+                "schema_version": "1.0",
+                "trace_id": self.trace_id,
+                "events": len(events),
+                "final_hash": events[-1]["hash"] if events else GENESIS,
+                "sealed_at": utc_now_iso(),
+            }
+            if ed25519_private_key is not None:
+                from .signing import sign_anchor
 
-            payload["signature_v2"] = sign_anchor(payload, ed25519_private_key)
-        if hmac_key:
-            payload["hmac"] = hmac.new(
-                hmac_key.encode("utf-8"),
-                canonical_json(payload).encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-        target = Path(anchor_path)
-        tmp = target.with_name(target.name + ".tmp")
-        try:
-            tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, target)
-        finally:
-            if tmp.exists():
-                tmp.unlink(missing_ok=True)
-        return payload
+                payload["signature_v2"] = sign_anchor(payload, ed25519_private_key)
+            if hmac_key:
+                payload["hmac"] = hmac.new(
+                    hmac_key.encode("utf-8"),
+                    canonical_json(payload).encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest()
+            target = Path(anchor_path)
+            tmp = target.with_name(target.name + ".tmp")
+            try:
+                tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+                os.replace(tmp, target)
+            finally:
+                if tmp.exists():
+                    tmp.unlink(missing_ok=True)
+            return payload
 
     # ---------------------------------------------------------------- resume
     def _resume(self) -> None:

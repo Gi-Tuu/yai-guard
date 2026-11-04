@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import io
 import pathlib
 import sqlite3
@@ -9,9 +10,30 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 class BackupStateTest(unittest.TestCase):
+    def _backup_module(self):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "backup_state_under_test", root / "scripts" / "backup_state.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_backup_rejects_state_change_during_snapshot(self) -> None:
+        module = self._backup_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = pathlib.Path(tmp) / "artifacts"
+            (artifacts / "traces").mkdir(parents=True)
+            (artifacts / "traces" / "tr.jsonl").write_text("{}\n", encoding="utf-8")
+            with mock.patch.object(module, "_tree_fingerprint",
+                                   side_effect=[{"tr.jsonl": (1, 1)},
+                                                {"tr.jsonl": (2, 2)}]):
+                with self.assertRaises(RuntimeError):
+                    module.backup(artifacts, pathlib.Path(tmp) / "backups")
+
     def test_backup_and_restore_roundtrip(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[2]
         script = root / "scripts" / "backup_state.py"

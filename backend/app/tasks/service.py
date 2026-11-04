@@ -55,6 +55,19 @@ class TaskService:
         self._degraded = True
         self._error = f"{type(exc).__name__}: {exc}"
 
+    def _probe(self) -> bool:
+        """Clear a sticky degraded flag once the store answers again."""
+        if self.store is None:
+            return False
+        try:
+            self.store.count_by_status()
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return False
+        self._degraded = False
+        self._error = None
+        return True
+
     # ---------------------------------------------------------------- writes
     def create(self, *, task_id: str, trace_id: str, owner: str, prompt: str,
                now: float | None = None) -> TaskRecord | None:
@@ -118,12 +131,16 @@ class TaskService:
             record = self.store.get_task(task_id)
             if record is None or record.status is not TaskStatus.RUNNING:
                 return record
-            return self.store.transition(task_id, TaskStatus.WAITING_APPROVAL)
+            return self.store.transition(
+                task_id, TaskStatus.WAITING_APPROVAL,
+                expected_version=record.version,
+            )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return None
 
-    def mark_resumed(self, task_id: str) -> TaskRecord | None:
+    def mark_resumed(self, task_id: str, *,
+                     lease_seconds: float = 60.0) -> TaskRecord | None:
         if self.store is None:
             return None
         try:
@@ -132,7 +149,8 @@ class TaskService:
                 return record
             return self.store.transition(
                 task_id, TaskStatus.RUNNING,
-                lease_until=time.time() + 60.0,
+                lease_until=time.time() + lease_seconds,
+                expected_version=record.version,
             )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
@@ -154,6 +172,7 @@ class TaskService:
                 return record
             return self.store.finish(
                 task_id, destination, summary=summary, error=error,
+                expected_version=record.version,
             )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
@@ -366,6 +385,8 @@ class TaskService:
             return []
 
     def health(self) -> dict[str, Any]:
+        if self._degraded and self.store is not None:
+            self._probe()
         return {
             "ok": not self._degraded,
             "mode": self.mode,

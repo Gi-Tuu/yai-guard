@@ -501,13 +501,18 @@ class DockerSandbox:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise DockerError(f"orphan listing failed: {type(exc).__name__}: {exc}") from exc
         removed: list[str] = []
+        failed: list[dict] = []
         for name in listing.stdout.splitlines():
             name = name.strip()
             if not name.startswith("yaig-"):
                 continue
-            subprocess.run([self.docker_bin, "rm", "-f", name],
-                           capture_output=True, text=True, timeout=30)
-            removed.append(name)
+            result = self.destroy(name[len("yaig-"):])
+            if result.get("verified") is True:
+                removed.append(name)
+            else:
+                failed.append({"container": name, "result": result})
+        if failed:
+            raise DockerError(f"orphan removal could not be verified: {failed[:3]}")
         return removed
 
     def host_fingerprint(self) -> dict:
