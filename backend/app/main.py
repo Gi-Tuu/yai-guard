@@ -101,6 +101,7 @@ _LOCK = threading.Lock()
 # a second uvicorn worker/process fail closed instead of double-executing tasks.
 _RUNTIME_LOCK_HANDLE = None
 _RUNTIME_LOCK_OK = True
+_MAINTENANCE_LOCK_HANDLE = None
 
 
 def _acquire_runtime_lock() -> bool:
@@ -699,12 +700,33 @@ def _multi_worker_loop(worker_id: str) -> None:
             _release_exec_slot()
 
 
+def _try_maintenance_lock() -> bool:
+    """Only one process performs recovery/evidence maintenance in multi mode."""
+    global _MAINTENANCE_LOCK_HANDLE
+    if _MAINTENANCE_LOCK_HANDLE is not None:
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    try:
+        handle = open(ARTIFACTS / "task-maintenance.lock", "a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _MAINTENANCE_LOCK_HANDLE = handle
+        return True
+    except OSError:
+        return False
+
+
 def _multi_recovery_loop() -> None:
     while True:
         time.sleep(max(5, int(os.environ.get("MULTI_RECOVERY_INTERVAL_S", "15"))))
+        if not _try_maintenance_lock():
+            continue
         try:
             TASK_SERVICE.recover_expired()
             TASK_SERVICE.expire_approvals_before(time.time())
+            _record_interrupted_events()
         except Exception:  # noqa: BLE001
             pass
 
