@@ -7,6 +7,7 @@ truth, while this module owns task metadata and coordination state.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -22,7 +23,7 @@ from .models import (
     can_transition,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _TASKS = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -69,6 +70,18 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 """
 
+_EVENTS = """
+CREATE TABLE IF NOT EXISTS task_events (
+    task_id     TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    event_json  TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (task_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task_seq
+    ON task_events(task_id, seq);
+"""
+
 
 def _migration_v1(conn: sqlite3.Connection) -> None:
     conn.execute(_TASKS)
@@ -83,9 +96,13 @@ def _migration_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_v3(conn: sqlite3.Connection) -> None:
+    conn.executescript(_EVENTS)
+
+
 # Ordered migration steps. Add a new function and bump SCHEMA_VERSION for any
 # future schema change; never edit an already-released step.
-_MIGRATIONS = {1: _migration_v1, 2: _migration_v2}
+_MIGRATIONS = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3}
 
 
 class TaskAlreadyExists(RuntimeError):
@@ -508,6 +525,35 @@ class TaskStore:
                 (TaskStatus.QUEUED.value,),
             ).fetchall()
         return [self._record(row) for row in rows]
+
+    def append_event(self, task_id: str, event: dict[str, Any]) -> None:
+        seq = int(event.get("seq", 0))
+        if seq <= 0:
+            return
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO task_events (task_id, seq, event_json, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, seq, json.dumps(event, ensure_ascii=False), time.time()),
+            )
+
+    def list_events(self, task_id: str, *, after_seq: int = 0,
+                    limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT event_json FROM task_events WHERE task_id = ? AND seq > ? "
+                "ORDER BY seq LIMIT ?",
+                (task_id, int(after_seq), max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [json.loads(row["event_json"]) for row in rows]
+
+    def count_events(self, task_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        return int(row["n"]) if row else 0
 
     # ------------------------------------------------------------------ stats
     def count_by_status(self) -> dict[str, int]:

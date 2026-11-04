@@ -474,6 +474,42 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertEqual(summary["requeued"], [])
             self.assertEqual(len(executor.submitted), 1)
 
+    def test_db_event_store_and_db_approval_roundtrip(self) -> None:
+        from app.agent.mock_model import MockModel
+
+        tmp = tempfile.TemporaryDirectory()
+        service = TaskService.from_path(pathlib.Path(tmp.name) / "tasks.db")
+        old_ttl = api.POLICY.approval_ttl
+        api.POLICY.approval_ttl = 5
+        try:
+            with mock.patch.object(api, "TASK_SERVICE", service), \
+                    mock.patch.object(api, "TASK_APPROVAL_STORE", "db"), \
+                    mock.patch.object(api, "TASK_EVENT_STORE", "db"), \
+                    mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+                created = self.client.post(
+                    "/api/tasks", json={"task": "db approval"}, headers=TOKEN_A,
+                ).json()
+                task_id = created["task_id"]
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if service.pending_approvals(task_id):
+                        break
+                    time.sleep(0.05)
+                pending = service.pending_approvals(task_id)
+                self.assertEqual(len(pending), 1)
+                approved = self.client.post(
+                    f"/api/tasks/{task_id}/approvals/{pending[0]['call_id']}",
+                    json={"approved": True}, headers=TOKEN_A,
+                )
+                self.assertEqual(approved.status_code, 200)
+                final = _wait(self.client, task_id, TOKEN_A, timeout_s=8)
+                self.assertEqual(final["status"], "completed")
+                self.assertGreater(service.count_events(task_id), 0)
+        finally:
+            api.POLICY.approval_ttl = old_ttl
+            service.close()
+            tmp.cleanup()
+
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:
         created = self.client.post("/api/tasks", json={"task": "ls /workspace"},

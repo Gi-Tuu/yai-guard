@@ -60,6 +60,14 @@ ARTIFACTS = Path(os.environ.get("ARTIFACT_DIR", str(REPO_ROOT / "artifacts")))
 TRACES = ARTIFACTS / "traces"
 WEB = _pick_web()
 TASK_STORE_MODE = os.environ.get("TASK_STORE", "memory").lower()
+TASK_RUNTIME_MODE = os.environ.get("TASK_RUNTIME_MODE", "single").lower()
+TASK_EVENT_STORE = os.environ.get("TASK_EVENT_STORE", "memory").lower()
+TASK_APPROVAL_STORE = os.environ.get("TASK_APPROVAL_STORE", "memory").lower()
+if TASK_RUNTIME_MODE == "multi":
+    # Phase 1: multi mode uses durable events/approvals; queue execution remains
+    # single-writer until the Phase 2 worker claim lands.
+    TASK_EVENT_STORE = "db"
+    TASK_APPROVAL_STORE = "db"
 TASK_SERVICE = (
     TaskService.from_path(ARTIFACTS / "tasks.db")
     if TASK_STORE_MODE == "sqlite"
@@ -217,6 +225,9 @@ def _prune_tasks() -> None:
 def _owned_task(task_id: str, principal: str) -> TaskState:
     """任务不存在与无权访问都返回 404，避免通过状态码枚举别人的任务。"""
     state = TASKS.get(task_id)
+    if TASK_RUNTIME_MODE == "multi" and TASK_SERVICE.enabled:
+        # DB is the only authoritative source across workers.
+        state = None
     if state is None and TASK_SERVICE.enabled:
         record = TASK_SERVICE.get_record(task_id)
         if record is not None and record.owner == principal:
@@ -345,16 +356,6 @@ def _approver(state: TaskState):
 
     def approve(decision: Decision, call: ToolCall) -> bool:
         key = (task_id, call.id)
-        gate = threading.Event()
-        with _LOCK:
-            PENDING[key] = {
-                "decision": decision.to_dict(),
-                "call": {"name": call.name, "arguments": call.arguments},
-                "event": gate,
-                "approved": False,
-                "resolved": False,
-                "owner": owner,
-            }
         state.status = "waiting_approval"
         TASK_SERVICE.mark_waiting(task_id)
         TASK_SERVICE.create_approval(
@@ -370,6 +371,55 @@ def _approver(state: TaskState):
             deadline = min(deadline, state.deadline_at)
         decided = False
         cancelled = False
+        if TASK_APPROVAL_STORE == "db":
+            approved = False
+            observed: str | None = None
+            try:
+                while True:
+                    record = TASK_SERVICE.get_approval(task_id, call.id)
+                    status = (record or {}).get("status")
+                    if status == "approved":
+                        approved, decided = True, True
+                        break
+                    if status in ("rejected", "expired", "cancelled"):
+                        observed = status
+                        decided = True
+                        break
+                    if state.cancel_event.is_set():
+                        cancelled = True
+                        break
+                    current = TASK_SERVICE.get_record(task_id)
+                    if current is not None and current.cancel_requested:
+                        cancelled = True
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.2)
+            finally:
+                _acquire_exec_slot()
+            state.status = "running"
+            TASK_SERVICE.mark_resumed(task_id)
+            if cancelled:
+                status = ApprovalStatus.CANCELLED
+            elif observed is not None:
+                status = ApprovalStatus(observed)
+            elif not decided:
+                status = ApprovalStatus.EXPIRED
+            else:
+                status = ApprovalStatus.REJECTED
+            TASK_SERVICE.resolve_approval(task_id, call.id, status)
+            return approved
+
+        gate = threading.Event()
+        with _LOCK:
+            PENDING[key] = {
+                "decision": decision.to_dict(),
+                "call": {"name": call.name, "arguments": call.arguments},
+                "event": gate,
+                "approved": False,
+                "resolved": False,
+                "owner": owner,
+            }
         try:
             while True:
                 if gate.wait(timeout=0.2):
@@ -455,6 +505,11 @@ def _run_task(state: TaskState) -> None:
         state.events.append({"event": "task.created", "payload": {"task": state.task}})
         state.status = "running"
 
+        def _emit_event(event: dict[str, Any]) -> None:
+            state.events.append(event)
+            if TASK_SERVICE.enabled:
+                TASK_SERVICE.append_event(state.task_id, event)
+
         sandbox = _build_sandbox()
         result = run_agent(
             task=state.task,
@@ -464,7 +519,7 @@ def _run_task(state: TaskState) -> None:
             trace=trace,
             task_id=state.task_id,
             approver=_approver(state),
-            emit=state.events.append,
+            emit=_emit_event,
             require_claims=os.environ.get("MOCK_MODEL", "0") != "1",
             should_cancel=state.cancel_event.is_set,
         )
@@ -804,6 +859,9 @@ def healthz() -> JSONResponse:
         "model_configured": model_ok,
         "task_store": task_store,
         "runtime_lock": {"ok": _RUNTIME_LOCK_OK},
+        "runtime_mode": TASK_RUNTIME_MODE,
+        "event_store": TASK_EVENT_STORE,
+        "approval_store": TASK_APPROVAL_STORE,
         "concurrency": {
             "execution_slots": TASK_CONCURRENCY,
             "waiting_threads": TASK_WAITING_THREADS,
@@ -880,13 +938,15 @@ def cancel_task(task_id: str,
 @app.get("/api/tasks/{task_id}")
 def get_task(task_id: str, principal: str = Depends(_require_principal)) -> dict[str, Any]:
     state = _owned_task(task_id, principal)
+    event_count = (TASK_SERVICE.count_events(task_id)
+                   if TASK_EVENT_STORE == "db" else len(state.events))
     return {
         "task_id": state.task_id,
         "trace_id": state.trace_id,
         "status": state.status,
         "summary": state.summary,
         "error": state.error,
-        "events": len(state.events),
+        "events": event_count,
     }
 
 
@@ -901,10 +961,17 @@ def stream_events(task_id: str, principal: str = Depends(_require_principal)) ->
         last_ping = time.monotonic()
         try:
             while True:
-                with _LOCK:
-                    batch = state.events[cursor:]
-                    cursor += len(batch)
-                    finished = state.status in ("completed", "failed", "cancelled", "interrupted")
+                if TASK_EVENT_STORE == "db":
+                    batch = TASK_SERVICE.list_events(task_id, after_seq=cursor)
+                    if batch:
+                        cursor = max(int(event.get("seq", 0)) for event in batch)
+                    record = TASK_SERVICE.get_record(task_id)
+                    finished = bool(record and record.terminal)
+                else:
+                    with _LOCK:
+                        batch = state.events[cursor:]
+                        cursor += len(batch)
+                        finished = state.status in ("completed", "failed", "cancelled", "interrupted")
                 for event in batch:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if finished and not batch:
@@ -936,6 +1003,20 @@ def resolve_approval(task_id: str, call_id: str, body: dict[str, Any],
             detail="'approved' must be a JSON boolean (true/false), not a string or number",
         )
     key = (task_id, call_id)
+    if TASK_APPROVAL_STORE == "db":
+        record = TASK_SERVICE.get_approval(task_id, call_id)
+        if record is None or record.get("owner") != principal:
+            raise HTTPException(status_code=404, detail="approval not found or expired")
+        if record.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="approval already resolved")
+        resolved = TASK_SERVICE.resolve_approval(
+            task_id, call_id,
+            ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
+        )
+        if not resolved:
+            raise HTTPException(status_code=409, detail="approval already resolved")
+        return {"ok": True, "approved": approved}
+
     with _LOCK:
         record = PENDING.get(key)
         if record is None:

@@ -179,12 +179,12 @@ class TaskStoreTest(unittest.TestCase):
 
     def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
         version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(int(version), 2)
+        self.assertEqual(int(version), 3)
         self.store.close()
         reopened = TaskStore(self.path)
         try:
             self.assertEqual(
-                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 2,
+                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 3,
             )
         finally:
             reopened.close()
@@ -202,14 +202,27 @@ class TaskStoreTest(unittest.TestCase):
         migrated = TaskStore(v1_path)
         try:
             self.assertEqual(
-                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 2,
+                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 3,
             )
             columns = {row[1] for row in migrated._conn.execute("PRAGMA table_info(tasks)")}
             self.assertIn("updated_at", columns)
+            tables = {row[0] for row in migrated._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("task_events", tables)
             migrated.create_task(task_id="new", trace_id="tr_new", owner="u", prompt="x")
             self.assertIsNotNone(migrated.get_task("new"))
         finally:
             migrated.close()
+
+    def test_append_and_list_events(self) -> None:
+        self._create("tk1")
+        self.store.append_event("tk1", {"seq": 1, "event": "task.created", "payload": {}})
+        self.store.append_event("tk1", {"seq": 2, "event": "agent.step", "payload": {"step": 1}})
+        self.store.append_event("tk1", {"seq": 2, "event": "duplicate", "payload": {}})
+        self.assertEqual(self.store.count_events("tk1"), 2)
+        events = self.store.list_events("tk1", after_seq=1)
+        self.assertEqual([event["seq"] for event in events], [2])
+        self.assertEqual(events[0]["event"], "agent.step")
 
 
 if __name__ == "__main__":
