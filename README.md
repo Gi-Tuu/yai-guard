@@ -79,6 +79,10 @@ runtime:
   interrupted work;
 - one process owns the durable runtime via an advisory `flock`; a second app
   process fails closed (`runtime_lock` in `/healthz`) rather than double-executing;
+- `TASK_RUNTIME_MODE=multi` (requires `TASK_STORE=sqlite`) switches to a DB queue:
+  each process claims tasks atomically, `TASK_WORKERS` controls local workers,
+  events and approvals live in SQLite so API/SSE can be served by any worker;
+  the default remains the conservative single-writer mode;
 - terminal state is retained for `TASK_RETENTION_DAYS` (default 30, `0` disables);
   scheduled cleanup removes DB rows, approvals, traces and anchors;
 - schema migrations are ordered and versioned (`PRAGMA user_version`); v2 adds

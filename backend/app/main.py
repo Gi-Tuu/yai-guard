@@ -69,7 +69,8 @@ if TASK_RUNTIME_MODE == "multi":
     TASK_EVENT_STORE = "db"
     TASK_APPROVAL_STORE = "db"
 TASK_SERVICE = (
-    TaskService.from_path(ARTIFACTS / "tasks.db")
+    TaskService.from_path(ARTIFACTS / "tasks.db",
+                          recover=(TASK_RUNTIME_MODE != "multi"))
     if TASK_STORE_MODE == "sqlite"
     else TaskService()
 )
@@ -104,6 +105,8 @@ _RUNTIME_LOCK_OK = True
 
 def _acquire_runtime_lock() -> bool:
     global _RUNTIME_LOCK_HANDLE
+    if TASK_RUNTIME_MODE == "multi":
+        return True
     if not TASK_SERVICE.enabled:
         return True
     try:
@@ -135,6 +138,7 @@ class TaskState:
     events: list[dict] = field(default_factory=list)
     cancel_event: threading.Event = field(default_factory=threading.Event)
     deadline_at: float = 0.0
+    worker_id: str = "app"
 
 
 TASKS: dict[str, TaskState] = {}
@@ -142,9 +146,13 @@ PENDING: dict[tuple[str, str], dict[str, Any]] = {}
 
 # 执行槽与排队：审批等待会释放执行槽，避免一个审批卡死全部任务。
 TASK_CONCURRENCY = max(1, int(os.environ.get("TASK_CONCURRENCY", "1")))
+TASK_WORKERS = max(1, int(os.environ.get("TASK_WORKERS",
+                                         str(TASK_CONCURRENCY))))
 TASK_WAITING_THREADS = max(0, int(os.environ.get("TASK_WAITING_THREADS", "4")))
 TASK_QUEUE_MAX = max(TASK_CONCURRENCY, int(os.environ.get("TASK_QUEUE_MAX", "8")))
-_EXEC_SLOTS = threading.BoundedSemaphore(TASK_CONCURRENCY)
+_EXEC_SLOTS = threading.BoundedSemaphore(
+    TASK_WORKERS if TASK_RUNTIME_MODE == "multi" else TASK_CONCURRENCY
+)
 _TASK_EXECUTOR = ThreadPoolExecutor(
     max_workers=TASK_CONCURRENCY + TASK_WAITING_THREADS,
     thread_name_prefix="yaig-task",
@@ -451,11 +459,12 @@ def _approver(state: TaskState):
 
 
 # ---------------------------------------------------------------- task runner
-def _run_task(state: TaskState) -> None:
-    """Run one task while guaranteeing slot release and a terminal state.
+def _run_task(state: TaskState, *, already_claimed: bool = False,
+              slot_held: bool = False) -> None:
+    """Run one task while guaranteeing terminal state and slot release.
 
-    TraceStore construction itself can fail (disk full, unwritable artifact
-    directory, corrupt trace). It must not leave the global demo slot acquired.
+    Single mode claims the task here. The multi-worker loop claims in SQLite
+    first and passes ``already_claimed=True`` / ``slot_held=True``.
     """
     trace: TraceStore | None = None
     final_status = "failed"
@@ -463,16 +472,18 @@ def _run_task(state: TaskState) -> None:
     final_error: str | None = None
     deadline_timer: threading.Timer | None = None
     heartbeat_stop: threading.Event | None = None
-    _release_queue_slot()
-    _EXEC_SLOTS.acquire()
-    if TASK_SERVICE.enabled:
+    if not already_claimed:
+        _release_queue_slot()
+    if not slot_held:
+        _EXEC_SLOTS.acquire()
+    if TASK_SERVICE.enabled and not already_claimed:
         record = TASK_SERVICE.get_record(state.task_id)
         if record is None or record.status is not TaskStatus.QUEUED:
             with _DISPATCH_LOCK:
                 _DISPATCHED_QUEUED.discard(state.task_id)
             _release_exec_slot()
             return
-        started = TASK_SERVICE.mark_running(state.task_id, worker_id="app")
+        started = TASK_SERVICE.mark_running(state.task_id, worker_id=state.worker_id)
         if started is None:
             with _DISPATCH_LOCK:
                 _DISPATCHED_QUEUED.discard(state.task_id)
@@ -486,7 +497,8 @@ def _run_task(state: TaskState) -> None:
 
         def _heartbeat() -> None:
             while not heartbeat_stop.wait(20):
-                TASK_SERVICE.heartbeat(state.task_id, worker_id="app", lease_seconds=60)
+                TASK_SERVICE.heartbeat(state.task_id, worker_id=state.worker_id,
+                                       lease_seconds=60)
 
         if TASK_SERVICE.enabled:
             threading.Thread(target=_heartbeat, name=f"heartbeat-{state.task_id}",
@@ -510,6 +522,14 @@ def _run_task(state: TaskState) -> None:
             if TASK_SERVICE.enabled:
                 TASK_SERVICE.append_event(state.task_id, event)
 
+        def _should_cancel() -> bool:
+            if state.cancel_event.is_set():
+                return True
+            if TASK_RUNTIME_MODE == "multi" and TASK_SERVICE.enabled:
+                current = TASK_SERVICE.get_record(state.task_id)
+                return bool(current and current.cancel_requested)
+            return False
+
         sandbox = _build_sandbox()
         result = run_agent(
             task=state.task,
@@ -521,7 +541,7 @@ def _run_task(state: TaskState) -> None:
             approver=_approver(state),
             emit=_emit_event,
             require_claims=os.environ.get("MOCK_MODEL", "0") != "1",
-            should_cancel=state.cancel_event.is_set,
+            should_cancel=_should_cancel,
         )
         final_status = result.status
         final_summary = result.summary
@@ -602,6 +622,7 @@ def _trace_health() -> tuple[bool, str | None]:
 _REAPER_STARTED = False
 _REQUEUE_STARTED = False
 _RETENTION_STARTED = False
+_MULTI_WORKERS_STARTED = False
 _DISPATCH_LOCK = threading.Lock()
 _DISPATCHED_QUEUED: set[str] = set()
 
@@ -649,6 +670,42 @@ def _retention_loop() -> None:
         try:
             _prune_old_state()
         except Exception:  # noqa: BLE001 - retention must not crash the app
+            pass
+
+
+def _multi_worker_loop(worker_id: str) -> None:
+    while True:
+        if not _EXEC_SLOTS.acquire(blocking=False):
+            time.sleep(0.5)
+            continue
+        record = TASK_SERVICE.claim_next(worker_id=worker_id, lease_seconds=60)
+        if record is None:
+            _release_exec_slot()
+            time.sleep(0.5)
+            continue
+        state = TaskState(
+            task_id=record.id,
+            trace_id=record.trace_id,
+            task=record.prompt,
+            owner=record.owner,
+            status=record.status.value,
+            worker_id=worker_id,
+        )
+        with _LOCK:
+            TASKS[record.id] = state
+        try:
+            _run_task(state, already_claimed=True, slot_held=True)
+        except Exception:  # noqa: BLE001 - one task must not kill the worker
+            _release_exec_slot()
+
+
+def _multi_recovery_loop() -> None:
+    while True:
+        time.sleep(max(5, int(os.environ.get("MULTI_RECOVERY_INTERVAL_S", "15"))))
+        try:
+            TASK_SERVICE.recover_expired()
+            TASK_SERVICE.expire_approvals_before(time.time())
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -780,8 +837,31 @@ def _requeue_loop() -> None:
 @app.on_event("startup")
 def _reap_stale_sandboxes() -> None:
     """Reap only containers that cannot belong to a healthy durable task."""
-    global _REAPER_STARTED, _REQUEUE_STARTED, _RETENTION_STARTED
+    global _REAPER_STARTED, _REQUEUE_STARTED, _RETENTION_STARTED, _MULTI_WORKERS_STARTED
     if not _RUNTIME_LOCK_OK:
+        return
+    if TASK_SERVICE.enabled and TASK_RUNTIME_MODE == "multi":
+        if os.environ.get("SANDBOX_DRIVER", "fake") == "remote":
+            try:
+                _run_orphan_reaper(grace_s=0)
+            except Exception:  # noqa: BLE001
+                pass
+            if os.environ.get("ORPHAN_REAPER", "1") != "0" and not _REAPER_STARTED:
+                _REAPER_STARTED = True
+                threading.Thread(target=_reaper_loop, name="orphan-reaper",
+                                 daemon=True).start()
+        if not _MULTI_WORKERS_STARTED:
+            _MULTI_WORKERS_STARTED = True
+            for index in range(TASK_WORKERS):
+                worker_id = f"{os.getpid()}-{index}"
+                threading.Thread(target=_multi_worker_loop, args=(worker_id,),
+                                 name=f"multi-worker-{index}", daemon=True).start()
+            threading.Thread(target=_multi_recovery_loop, name="multi-recovery",
+                             daemon=True).start()
+            if os.environ.get("TASK_RETENTION_DAYS", "30") != "0":
+                _RETENTION_STARTED = True
+                threading.Thread(target=_retention_loop, name="task-retention",
+                                 daemon=True).start()
         return
     if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
         return
@@ -863,10 +943,12 @@ def healthz() -> JSONResponse:
         "event_store": TASK_EVENT_STORE,
         "approval_store": TASK_APPROVAL_STORE,
         "concurrency": {
-            "execution_slots": TASK_CONCURRENCY,
+            "execution_slots": TASK_WORKERS if TASK_RUNTIME_MODE == "multi"
+            else TASK_CONCURRENCY,
             "waiting_threads": TASK_WAITING_THREADS,
             "queue_max": TASK_QUEUE_MAX,
-            "queued": _QUEUED,
+            "queued": (TASK_SERVICE.count_queued()
+                       if TASK_RUNTIME_MODE == "multi" else _QUEUED),
         },
         "signing": {
             "alg": "ed25519" if TRACE_ED25519_PUBLIC is not None else None,
@@ -891,9 +973,27 @@ def create_task(body: dict[str, Any], request: Request,
         raise HTTPException(status_code=413, detail="task is too large")
     _enforce_rate_limit(request)
     _prune_tasks()
-    if TASK_SERVICE.enabled and not _RUNTIME_LOCK_OK:
+    if TASK_RUNTIME_MODE == "multi" and not TASK_SERVICE.enabled:
+        raise HTTPException(status_code=503,
+                            detail="multi-worker mode requires TASK_STORE=sqlite")
+    if (TASK_RUNTIME_MODE == "single" and TASK_SERVICE.enabled
+            and not _RUNTIME_LOCK_OK):
         raise HTTPException(status_code=503,
                             detail="another app instance owns the task runtime")
+
+    task_id = "tk_" + uuid.uuid4().hex[:10]
+    trace_id = new_trace_id()
+    state = TaskState(task_id=task_id, trace_id=trace_id, task=task, owner=principal)
+    if TASK_RUNTIME_MODE == "multi":
+        if TASK_SERVICE.count_queued() >= TASK_QUEUE_MAX:
+            raise HTTPException(status_code=429, detail="task queue is full",
+                                headers={"Retry-After": "10"})
+        with _LOCK:
+            TASKS[task_id] = state
+        TASK_SERVICE.create(
+            task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
+        )
+        return {"task_id": task_id, "trace_id": trace_id, "status": "queued"}
 
     # 有界队列：超过队列上限才拒绝；任务提交到 worker 池，状态先为 queued。
     if not _reserve_queue_slot():
@@ -901,9 +1001,6 @@ def create_task(body: dict[str, Any], request: Request,
                             detail="task queue is full",
                             headers={"Retry-After": "10"})
 
-    task_id = "tk_" + uuid.uuid4().hex[:10]
-    trace_id = new_trace_id()
-    state = TaskState(task_id=task_id, trace_id=trace_id, task=task, owner=principal)
     with _LOCK:
         TASKS[task_id] = state
     TASK_SERVICE.create(

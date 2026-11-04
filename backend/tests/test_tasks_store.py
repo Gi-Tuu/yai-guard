@@ -177,6 +177,28 @@ class TaskStoreTest(unittest.TestCase):
         self.assertIsNotNone(self.store.get_task("active"))
         self.assertIsNone(self.store.get_approval("old", "c1"))
 
+    def test_claim_next_is_atomic_and_skips_active_tasks(self) -> None:
+        self._create("q1")
+        self._create("q2")
+        first = self.store.claim_next(worker_id="w1")
+        second = self.store.claim_next(worker_id="w2")
+        self.assertEqual(first.id, "q1")
+        self.assertEqual(second.id, "q2")
+        self.assertIsNone(self.store.claim_next(worker_id="w3"))
+        self.assertEqual(self.store.count_queued(), 0)
+
+    def test_recover_expired_only_touches_stale_leases(self) -> None:
+        self._create("stale")
+        self.store.transition("stale", TaskStatus.RUNNING, worker_id="w1",
+                              lease_until=1000)
+        self._create("active")
+        self.store.transition("active", TaskStatus.RUNNING, worker_id="w1",
+                              lease_until=5000)
+        recovered = self.store.recover_expired(now=2000)
+        self.assertEqual(recovered, ["stale"])
+        self.assertEqual(self.store.get_task("stale").status, TaskStatus.INTERRUPTED)
+        self.assertEqual(self.store.get_task("active").status, TaskStatus.RUNNING)
+
     def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
         version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(int(version), 3)

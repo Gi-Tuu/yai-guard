@@ -474,6 +474,34 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertEqual(summary["requeued"], [])
             self.assertEqual(len(executor.submitted), 1)
 
+    def test_multi_mode_create_only_enqueues(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        service = TaskService.from_path(pathlib.Path(tmp.name) / "tasks.db")
+
+        class FakeExecutor:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def submit(self, fn, state):
+                self.calls += 1
+
+        executor = FakeExecutor()
+        try:
+            with mock.patch.object(api, "TASK_SERVICE", service), \
+                    mock.patch.object(api, "TASK_RUNTIME_MODE", "multi"), \
+                    mock.patch.object(api, "_TASK_EXECUTOR", executor), \
+                    mock.patch.dict(api.TASKS, {}, clear=True):
+                created = self.client.post(
+                    "/api/tasks", json={"task": "queued multi"}, headers=TOKEN_A,
+                )
+                self.assertEqual(created.status_code, 200)
+                self.assertEqual(created.json()["status"], "queued")
+                self.assertEqual(executor.calls, 0)
+                self.assertEqual(service.count_queued(), 1)
+        finally:
+            service.close()
+            tmp.cleanup()
+
     def test_db_event_store_and_db_approval_roundtrip(self) -> None:
         from app.agent.mock_model import MockModel
 
