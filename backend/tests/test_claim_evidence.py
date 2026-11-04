@@ -18,11 +18,15 @@ from app.trace import TraceStore  # noqa: E402
 
 
 def _last_evidence_seq(messages: list[dict]) -> int:
-    text = messages[-1].get("content", "")
-    match = re.search(r'"evidence_seq"\s*:\s*(\d+)', text)
-    if not match:
-        raise AssertionError("no evidence_seq in tool output: " + text[:300])
-    return int(match.group(1))
+    for message in reversed(messages):
+        text = message.get("content", "")
+        match = re.search(r'"evidence_seq"\s*:\s*(\d+)', text)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"Available evidence_seq:\s*(\d+)", text)
+        if match:
+            return int(match.group(1))
+    raise AssertionError("no evidence_seq in conversation: " + repr(messages[-1])[:300])
 
 
 class ClaimModel:
@@ -81,6 +85,50 @@ class MissingClaimModel(ClaimModel):
         return ModelResponse(
             content="finish without claims",
             tool_calls=[ToolCall("c2", "finish", {"summary": "no claims"})],
+            finish_reason="tool_calls",
+        )
+
+
+class NoFinishModel(ClaimModel):
+    """Executes a command, then returns a plain answer without calling finish."""
+
+    def __init__(self) -> None:
+        self.step = 0
+
+    def complete(self, messages, *, tools=None, model=None):
+        self.step += 1
+        if self.step == 1:
+            return ModelResponse(
+                content="run a command",
+                tool_calls=[ToolCall("c1", "run_command", {"command": "echo hi"})],
+                finish_reason="tool_calls",
+            )
+        return ModelResponse(content="finished without claims", finish_reason="stop")
+
+
+class CorrectionModel(ClaimModel):
+    """Ignores finish once, then follows the evidence correction."""
+
+    def __init__(self) -> None:
+        self.step = 0
+
+    def complete(self, messages, *, tools=None, model=None):
+        self.step += 1
+        if self.step == 1:
+            return ModelResponse(
+                content="run a command",
+                tool_calls=[ToolCall("c1", "run_command", {"command": "echo hi"})],
+                finish_reason="tool_calls",
+            )
+        if self.step == 2:
+            return ModelResponse(content="finished without claims", finish_reason="stop")
+        seq = _last_evidence_seq(messages)
+        return ModelResponse(
+            content="finished after correction",
+            tool_calls=[ToolCall("c2", "finish", {
+                "summary": "echo ran with evidence",
+                "claims": [{"text": "echo exited 0", "evidence_seq": seq}],
+            })],
             finish_reason="tool_calls",
         )
 
@@ -144,6 +192,37 @@ class ClaimEvidenceTest(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertFalse(any(e["event"] == "task.completed" for e in self.trace.read()))
 
+    def test_plain_answer_without_finish_is_rejected(self) -> None:
+        result = run_agent(
+            task="run echo hi",
+            model=NoFinishModel(),
+            policy=PolicyEngine.from_file(),
+            sandbox=FakeSandbox(),
+            trace=self.trace,
+            task_id="tk_no_finish",
+            approver=lambda d, c: True,
+            require_claims=True,
+            max_steps=3,
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertFalse(any(e["event"] == "task.completed" for e in self.trace.read()))
+
+    def test_correction_then_finish_completes(self) -> None:
+        result = run_agent(
+            task="run echo hi",
+            model=CorrectionModel(),
+            policy=PolicyEngine.from_file(),
+            sandbox=FakeSandbox(),
+            trace=self.trace,
+            task_id="tk_correction",
+            approver=lambda d, c: True,
+            require_claims=True,
+            max_steps=4,
+        )
+        self.assertEqual(result.status, "completed")
+        completed = next(e for e in self.trace.read() if e["event"] == "task.completed")
+        self.assertTrue(completed["payload"]["claims_required"])
+        self.assertTrue(completed["payload"]["claims_verified"])
 
 if __name__ == "__main__":
     unittest.main()

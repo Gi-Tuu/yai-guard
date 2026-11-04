@@ -67,9 +67,15 @@ class FakeSandbox:
             raise PermissionError(f"write outside workspace: {norm}")
         self._files[norm] = data
 
-    def get_file(self, task_id: str, path: str, *, max_bytes: int = 1_048_576) -> bytes:
+    def get_file(self, task_id: str, path: str, *, max_bytes: int = 1_048_576,
+                 allow_missing: bool = True) -> bytes:
         norm = posixpath.normpath(path)
-        return self._files.get(norm, b"")[:max_bytes]
+        data = self._files.get(norm)
+        if data is None:
+            if allow_missing:
+                return b""
+            raise FileNotFoundError(path)
+        return data[:max_bytes]
 
     def list_files(self, task_id: str, path: str = "/workspace") -> list[str]:
         prefix = posixpath.normpath(path).rstrip("/") + "/"

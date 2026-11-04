@@ -116,13 +116,19 @@ def execute_tool(
     *,
     workspace: str = "/workspace",
     max_output_bytes: int = 8192,
+    max_command_timeout: int = 120,
 ) -> dict[str, Any]:
     """执行一个已通过策略的工具调用。异常一律转为结构化失败，交回模型自愈。"""
     args = call.arguments or {}
 
     if call.name == "run_command":
         command = str(args.get("command", ""))
-        timeout = int(args.get("timeout_s") or 120)
+        try:
+            requested_timeout = int(args.get("timeout_s") or 120)
+        except (TypeError, ValueError):
+            requested_timeout = 120
+        # The model must not be able to bypass the policy wall-clock cap.
+        timeout = max(1, min(requested_timeout, max(1, max_command_timeout)))
         result = sandbox.exec(task_id, command, timeout_s=timeout, cwd=workspace)
         return {
             "ok": result.exit_code == 0 and not result.timed_out,
@@ -139,6 +145,8 @@ def execute_tool(
     if call.name == "write_file":
         path = posixpath.normpath(str(args.get("path", "")))
         content = str(args.get("content", ""))
+        if len(content.encode("utf-8")) > max_output_bytes * 16:
+            return {"ok": False, "error": "write_file content exceeds the per-file limit"}
         before = sandbox.get_file(task_id, path)
         sandbox.put_file(task_id, path, content.encode("utf-8"))
         return {
@@ -151,7 +159,13 @@ def execute_tool(
 
     if call.name == "read_file":
         path = posixpath.normpath(str(args.get("path", "")))
-        data = sandbox.get_file(task_id, path, max_bytes=max_output_bytes)
+        try:
+            data = sandbox.get_file(
+                task_id, path, max_bytes=max_output_bytes, allow_missing=False
+            )
+        except Exception as exc:  # noqa: BLE001 - return a structured tool error
+            return {"ok": False, "path": path,
+                    "error": f"read failed: {type(exc).__name__}: {exc}"}
         return {"ok": True, "path": path, "content": data.decode("utf-8", "replace")}
 
     if call.name == "list_dir":

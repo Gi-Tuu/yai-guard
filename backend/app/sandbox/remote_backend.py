@@ -43,8 +43,13 @@ class RemoteSandbox:
     def put_file(self, task_id: str, path: str, data: bytes) -> None:
         self._request("PUT", f"/v1/sandbox/{task_id}/file?path={_q(path)}", data, raw=True)
 
-    def get_file(self, task_id: str, path: str, *, max_bytes: int = 1_048_576) -> bytes:
-        payload = self._request("GET", f"/v1/sandbox/{task_id}/file?path={_q(path)}")
+    def get_file(self, task_id: str, path: str, *, max_bytes: int = 1_048_576,
+                 allow_missing: bool = True) -> bytes:
+        payload = self._request(
+            "GET",
+            f"/v1/sandbox/{task_id}/file?path={_q(path)}&max_bytes={max_bytes}"
+            f"&allow_missing={int(allow_missing)}",
+        )
         return base64.b64decode(payload.get("base64", ""))
 
     def list_files(self, task_id: str, path: str = "/workspace") -> list[str]:

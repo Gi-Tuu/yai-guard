@@ -112,8 +112,12 @@ def verify_trace_file(
     last = kinds[-1] if kinds else None
     if last == "sandbox.destroy.unverified":
         result["cleanup_ok"] = False
-    elif last in ("sandbox.destroy.confirmed", "sandbox.destroyed"):
+    elif last == "sandbox.destroy.confirmed":
         result["cleanup_ok"] = True
+    elif last == "sandbox.destroyed":
+        # Legacy event only proves that a destroy was attempted. Strict
+        # verification must not turn it into a confirmed cleanup.
+        result["cleanup_ok"] = None
     if task_status == "completed":
         result["completeness_ok"] = bool(
             "task.completed" in kinds and last in ("sandbox.destroy.confirmed", "sandbox.destroyed")

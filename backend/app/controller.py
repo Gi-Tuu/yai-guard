@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 try:
@@ -25,6 +26,7 @@ _TOKEN = os.environ.get("SANDBOX_TOKEN", "")
 _IMAGE = os.environ.get("SANDBOX_IMAGE", "yaiguard/sandbox-py:1.0")
 _RUNTIME = os.environ.get("SANDBOX_RUNTIME") or "runc"
 _backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
+_BACKEND_LOCK = threading.Lock()
 
 # 启动即检查 daemon / runtime / 镜像；失败时 /healthz 返回 503，且 create 会显式报错。
 # 绝不静默把 runsc 降级成 runc（P1-6）。
@@ -76,7 +78,8 @@ def create(task_id: str, limits: dict[str, Any] | None = None,
         max_output_bytes=int(data.get("max_output_bytes", 8192)),
         max_total_output_bytes=int(data.get("max_total_output_bytes", 1_048_576)),
     )
-    _backend.create(task_id, parsed)
+    with _BACKEND_LOCK:
+        _backend.create(task_id, parsed)
     return {
         "ok": True, "task_id": task_id, "limits": parsed.to_dict(),
         "container_id": getattr(_backend, "_container_id", None),
@@ -89,12 +92,13 @@ def create(task_id: str, limits: dict[str, Any] | None = None,
 def execute(task_id: str, body: dict[str, Any],
             x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
-    result = _backend.exec(
-        task_id,
-        str(body.get("command", "")),
-        timeout_s=int(body.get("timeout_s", 120)),
-        cwd=str(body.get("cwd", "/workspace")),
-    )
+    with _BACKEND_LOCK:
+        result = _backend.exec(
+            task_id,
+            str(body.get("command", "")),
+            timeout_s=int(body.get("timeout_s", 120)),
+            cwd=str(body.get("cwd", "/workspace")),
+        )
     return {
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -111,17 +115,21 @@ async def put_file(task_id: str, path: str, request: Request,
                    x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
     data = await request.body()
-    _backend.put_file(task_id, path, data)
+    with _BACKEND_LOCK:
+        _backend.put_file(task_id, path, data)
     return {"ok": True, "bytes": len(data)}
 
 
 @app.get("/v1/sandbox/{task_id}/file")
-def get_file(task_id: str, path: str,
+def get_file(task_id: str, path: str, max_bytes: int = 1_048_576,
+             allow_missing: bool = True,
              x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
     import base64
 
-    data = _backend.get_file(task_id, path)
+    with _BACKEND_LOCK:
+        data = _backend.get_file(task_id, path, max_bytes=max_bytes,
+                                 allow_missing=allow_missing)
     return {"ok": True, "base64": base64.b64encode(data).decode("ascii")}
 
 
@@ -129,14 +137,17 @@ def get_file(task_id: str, path: str,
 def list_files(task_id: str, path: str = "/workspace",
                x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
-    return {"ok": True, "entries": _backend.list_files(task_id, path)}
+    with _BACKEND_LOCK:
+        entries = _backend.list_files(task_id, path)
+    return {"ok": True, "entries": entries}
 
 
 @app.delete("/v1/sandbox/{task_id}")
 def destroy(task_id: str,
             x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
-    result = _backend.destroy(task_id)
+    with _BACKEND_LOCK:
+        result = _backend.destroy(task_id)
     if not result.get("verified"):
         raise HTTPException(status_code=500, detail={
             "error": "container destroy could not be verified", "result": result,

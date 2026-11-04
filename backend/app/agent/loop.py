@@ -111,6 +111,7 @@ def run_agent(
 
     step = 0
     exec_seqs: list[int] = []
+    run_result: RunResult | None = None
     try:
         sandbox.create(task_id, _limits_from(policy))
         info = sandbox.sandbox_info() if callable(getattr(sandbox, "sandbox_info", None)) else {}
@@ -128,7 +129,8 @@ def run_agent(
                 record(actor="system", event="resource.limit",
                        payload={"kind": "task_timeout", "elapsed_s": round(elapsed, 1)})
                 record(actor="system", event="task.failed", payload={"reason": "task_timeout"})
-                return RunResult("failed", steps=step, error="task_timeout")
+                run_result = RunResult("failed", steps=step, error="task_timeout")
+                return run_result
 
             ctx = EvalContext(step=step, max_steps=max_steps, elapsed_s=elapsed,
                               task_timeout_s=timeout_s, task_id=task_id)
@@ -144,9 +146,31 @@ def run_agent(
             })
 
             if not response.tool_calls:
+                # A plain assistant answer is not a verifiable finish when commands
+                # ran. Ask the model to call finish with evidence, instead of
+                # silently accepting an uncited summary.
+                if require_claims and exec_seqs:
+                    messages.append({"role": "assistant", "content": response.content or ""})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You executed commands, so the task is not finished yet. "
+                            "Call finish with a summary and claims; every claim must cite "
+                            "an evidence_seq returned by run_command. Available evidence_seq: "
+                            + ", ".join(str(seq) for seq in exec_seqs)
+                        ),
+                    })
+                    continue
+                run_result = RunResult(
+                    "completed",
+                    summary=response.content,
+                    steps=step,
+                )
                 record(actor="agent", event="task.completed",
-                       payload={"summary": response.content, "steps": step})
-                return RunResult("completed", summary=response.content, steps=step)
+                       payload={"summary": response.content, "steps": step,
+                                "claims": [], "claims_verified": False,
+                                "claims_required": bool(require_claims and exec_seqs)})
+                return run_result
 
             messages.append({
                 "role": "assistant",
@@ -191,7 +215,16 @@ def run_agent(
                         continue
 
                 host_before = _host_snapshot(sandbox) if call.name == "run_command" else None
-                result = execute_tool(call, sandbox, task_id, max_output_bytes=max_output)
+                remaining_s = max(1, int(timeout_s - (time.monotonic() - started)))
+                result = execute_tool(
+                    call,
+                    sandbox,
+                    task_id,
+                    max_output_bytes=max_output,
+                    max_command_timeout=min(
+                        int(limits.get("command_timeout_s", 120)), remaining_s
+                    ),
+                )
                 host_after = _host_snapshot(sandbox) if call.name == "run_command" else None
 
                 if call.name == "run_command":
@@ -240,16 +273,21 @@ def run_agent(
                         "steps": step,
                         "claims": claims,
                         "claims_verified": bool(claims),
+                        "claims_required": bool(require_claims and exec_seqs),
                     })
-                    return RunResult("completed",
-                                     summary=str(call.arguments.get("summary", "")),
-                                     steps=step)
+                    run_result = RunResult(
+                        "completed",
+                        summary=str(call.arguments.get("summary", "")),
+                        steps=step,
+                    )
+                    return run_result
 
                 messages.append({"role": "tool", "tool_call_id": call.id,
                                  "content": _wrap_output(result)})
 
         record(actor="system", event="task.failed", payload={"reason": "max_steps_exceeded", "steps": step})
-        return RunResult("failed", steps=step, error="max_steps_exceeded")
+        run_result = RunResult("failed", steps=step, error="max_steps_exceeded")
+        return run_result
 
     except Exception as exc:
         # 先记失败，再进 finally 记销毁：保证 trace 的最后一条是销毁确认。
@@ -272,6 +310,10 @@ def run_agent(
             "reason": "lifecycle_end",
             "cleanup": cleanup,
         })
+        if run_result is not None and run_result.status == "completed" \
+                and cleanup.get("verified") is not True:
+            run_result.status = "failed"
+            run_result.error = "cleanup_unverified"
 
 
 def _host_snapshot(sandbox: SandboxBackend) -> dict:

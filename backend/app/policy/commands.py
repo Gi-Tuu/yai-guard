@@ -15,7 +15,7 @@ import shlex
 
 IFS_RE = re.compile(r"\$\{IFS\}|\$IFS")
 SEPARATOR_RE = re.compile(r"(?:&&|\|\||;|\n|\|)")
-REDIRECT_RE = re.compile(r"(?:^|\s)(?:[0-9]?>|>>|&>)\s*([^\s;&|]+)")
+REDIRECT_RE = re.compile(r"(?:^|(?<![0-9]))(?:[0-9]?>|>>|&>)\s*([^\s;&|]+)")
 URL_RE = re.compile(r"https?://([^/\s'\"`]+)", re.IGNORECASE)
 SHELL_BINARIES = {"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"}
 SHELL_WRAPPERS = {"env", "command", "exec", "nice", "nohup", "timeout", "xargs", "stdbuf"}
