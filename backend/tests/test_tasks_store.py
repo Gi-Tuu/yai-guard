@@ -33,7 +33,10 @@ class TaskStoreTest(unittest.TestCase):
 
     def _running(self, task_id: str = "tk1") -> None:
         self._create(task_id)
-        record = self.store.claim_next(worker_id="w1")
+        record = self.store.transition(
+            task_id, TaskStatus.RUNNING, worker_id="w1",
+            lease_until=time.time() + 60,
+        )
         self.assertIsNotNone(record)
         self.assertEqual(record.id, task_id)
 
@@ -94,24 +97,7 @@ class TaskStoreTest(unittest.TestCase):
         )
         self.assertNotEqual(old.version, record.version)
 
-    # ----------------------------------------------------------------- claim
-    def test_claim_is_single_owner(self) -> None:
-        self._create("tk1")
-        first = self.store.claim_next(worker_id="w1")
-        second = self.store.claim_next(worker_id="w2")
-        self.assertIsNotNone(first)
-        self.assertIsNone(second)
-        self.assertEqual(self.store.get_task("tk1").worker_id, "w1")
-
-    def test_claim_orders_by_created_at(self) -> None:
-        self.store.create_task(
-            task_id="later", trace_id="tr_later", owner="u1", prompt="x", now=20.0
-        )
-        self.store.create_task(
-            task_id="earlier", trace_id="tr_earlier", owner="u1", prompt="x", now=10.0
-        )
-        self.assertEqual(self.store.claim_next(worker_id="w1").id, "earlier")
-
+    # --------------------------------------------------------------- heartbeat
     def test_heartbeat_only_for_owner(self) -> None:
         self._running()
         self.assertTrue(self.store.heartbeat("tk1", worker_id="w1"))
@@ -121,8 +107,10 @@ class TaskStoreTest(unittest.TestCase):
     def test_recover_interrupts_only_active_tasks(self) -> None:
         self._running("running")
         self._create("waiting")
-        claimed = self.store.claim_next(worker_id="w1")
-        self.assertEqual(claimed.id, "waiting")
+        self.store.transition(
+            "waiting", TaskStatus.RUNNING, worker_id="w1",
+            lease_until=time.time() + 60,
+        )
         self.store.transition("waiting", TaskStatus.WAITING_APPROVAL)
         self._create("completed")
         self.store.transition("completed", TaskStatus.RUNNING)
@@ -164,7 +152,7 @@ class TaskStoreTest(unittest.TestCase):
     def test_counts(self) -> None:
         self._create("q1")
         self._create("q2")
-        self.store.claim_next(worker_id="w1")
+        self.store.transition("q1", TaskStatus.RUNNING, worker_id="w1")
         counts = self.store.count_by_status()
         self.assertEqual(counts[TaskStatus.QUEUED.value], 1)
         self.assertEqual(counts[TaskStatus.RUNNING.value], 1)
@@ -172,7 +160,7 @@ class TaskStoreTest(unittest.TestCase):
     def test_list_queued_excludes_claimed_tasks(self) -> None:
         self._create("q1")
         self._create("q2")
-        self.store.claim_next(worker_id="w1")
+        self.store.transition("q1", TaskStatus.RUNNING, worker_id="w1")
         self.assertEqual([record.id for record in self.store.list_queued()], ["q2"])
 
     def test_prune_removes_only_old_terminal_tasks(self) -> None:

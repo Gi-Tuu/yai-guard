@@ -1,7 +1,9 @@
-"""SQLite-backed task store for the durable task runtime (WP1 skeleton).
+"""SQLite-backed storage for the durable task runtime.
 
-Not wired into the API yet. It is deliberately independent from FastAPI and
-from the trace layer so it can be tested and migrated incrementally.
+The app process is the single writer for this database (a process-level flock is
+acquired by the API when SQLite is enabled). The store is independent from
+FastAPI and from the trace layer; tracing remains the event-level source of
+truth, while this module owns task metadata and coordination state.
 """
 from __future__ import annotations
 
@@ -274,51 +276,6 @@ class TaskStore:
             if cursor.rowcount != 1:
                 return None
         return self.get_task(task_id)
-
-    def claim_next(
-        self,
-        *,
-        worker_id: str,
-        lease_seconds: float = 60.0,
-        now: float | None = None,
-    ) -> TaskRecord | None:
-        """Atomically claim the oldest queued task."""
-        current = time.time() if now is None else now
-        with self._lock:
-            try:
-                self._conn.execute("BEGIN IMMEDIATE")
-                row = self._conn.execute(
-                    "SELECT id, version FROM tasks WHERE status = ? "
-                    "ORDER BY created_at LIMIT 1",
-                    (TaskStatus.QUEUED.value,),
-                ).fetchone()
-                if row is None:
-                    self._conn.commit()
-                    return None
-                cursor = self._conn.execute(
-                    "UPDATE tasks SET status = ?, worker_id = ?, lease_until = ?, "
-                    "started_at = COALESCE(started_at, ?), attempt = attempt + 1, "
-                    "updated_at = ?, version = version + 1 "
-                    "WHERE id = ? AND status = ? AND version = ?",
-                    (
-                        TaskStatus.RUNNING.value,
-                        worker_id,
-                        current + lease_seconds,
-                        current,
-                        current,
-                        row["id"],
-                        TaskStatus.QUEUED.value,
-                        row["version"],
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    self._conn.rollback()
-                    return None
-                self._conn.commit()
-                return self._get_locked(row["id"])
-            except Exception:
-                self._conn.rollback()
-                raise
 
     def heartbeat(
         self,
