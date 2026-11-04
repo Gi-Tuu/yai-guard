@@ -556,6 +556,11 @@ def _record_interrupted_events() -> list[str]:
             events = trace.read()
             if not events or any(e.get("event") == "task.interrupted" for e in events):
                 continue
+            if any(e.get("event") in ("task.completed", "task.failed", "task.cancelled")
+                   for e in events):
+                # Crash window: the task already wrote a terminal event but the
+                # DB update did not land. Never append a second terminal event.
+                continue
             trace.append(
                 task_id=record.id, actor="system", event="task.interrupted",
                 payload={"reason": "app_restart", "recovered_from": "durable_task_store"},
@@ -868,8 +873,10 @@ def verify_trace(task_id: str, principal: str = Depends(_require_principal)) -> 
 
 
 @app.post("/api/containment/run")
-def run_containment_lab(principal: str = Depends(_require_principal)) -> dict[str, Any]:
+def run_containment_lab(request: Request,
+                        principal: str = Depends(_require_principal)) -> dict[str, Any]:
     """直接跑 5 个容器边界探针；不经过 policy/LLM。"""
+    _enforce_rate_limit(request)
     if not _EXEC_SLOTS.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="all execution slots are busy")
     task_id = "ct_" + uuid.uuid4().hex[:10]
