@@ -35,6 +35,7 @@ os.environ.setdefault("RATE_LIMIT_PER_MIN", "0")
 
 if TestClient is not None:  # 依赖齐全才导入 app
     from app import main as api  # noqa: E402
+from app.tasks import TaskService  # noqa: E402
 
 TOKEN_A = {"X-Demo-Token": "token-a"}
 TOKEN_B = {"X-Demo-Token": "token-b"}
@@ -188,6 +189,24 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertEqual(third.status_code, 429)
         os.environ["RATE_LIMIT_PER_MIN"] = "0"
 
+
+    def test_sqlite_task_service_bridge(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        service = TaskService.from_path(pathlib.Path(tmp.name) / "tasks.db")
+        try:
+            with mock.patch.object(api, "TASK_SERVICE", service):
+                created = self.client.post(
+                    "/api/tasks", json={"task": "ls /workspace"}, headers=TOKEN_A
+                )
+                self.assertEqual(created.status_code, 200)
+                task_id = created.json()["task_id"]
+                _wait(self.client, task_id, TOKEN_A)
+                record = service.get_record(task_id)
+                self.assertIsNotNone(record)
+                self.assertEqual(record.status.value, "completed")
+        finally:
+            service.close()
+            tmp.cleanup()
     # ---------------------------------------------------------- rate limit
     def test_rate_limit_returns_429_with_retry_after(self) -> None:
         os.environ["RATE_LIMIT_PER_MIN"] = "2"

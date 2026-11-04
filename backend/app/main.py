@@ -39,6 +39,7 @@ from app.agent.loop import run_agent
 from app.agent.mock_model import MockModel
 from app.policy import Decision, EvalContext, PolicyEngine, ToolCall
 from app.sandbox.fake_backend import FakeSandbox
+from app.tasks import TaskService, TaskStatus
 from app.trace import TraceStore, new_trace_id, verify_trace_file
 from app.trace.bundle import build_bundle
 from app.containment import run_containment
@@ -56,6 +57,12 @@ def _pick_web() -> Path:
 ARTIFACTS = Path(os.environ.get("ARTIFACT_DIR", str(REPO_ROOT / "artifacts")))
 TRACES = ARTIFACTS / "traces"
 WEB = _pick_web()
+TASK_STORE_MODE = os.environ.get("TASK_STORE", "memory").lower()
+TASK_SERVICE = (
+    TaskService.from_path(ARTIFACTS / "tasks.db")
+    if TASK_STORE_MODE == "sqlite"
+    else TaskService()
+)
 
 app = FastAPI(title="YAI Guard", version="0.1.0")
 POLICY = PolicyEngine.from_file()
@@ -137,6 +144,20 @@ def _prune_tasks() -> None:
 def _owned_task(task_id: str, principal: str) -> TaskState:
     """任务不存在与无权访问都返回 404，避免通过状态码枚举别人的任务。"""
     state = TASKS.get(task_id)
+    if state is None and TASK_SERVICE.enabled:
+        record = TASK_SERVICE.get_record(task_id)
+        if record is not None and record.owner == principal:
+            state = TaskState(
+                task_id=record.id,
+                trace_id=record.trace_id,
+                task=record.prompt,
+                owner=record.owner,
+                status=record.status.value,
+                summary=record.summary,
+                error=record.error,
+            )
+            with _LOCK:
+                TASKS.setdefault(task_id, state)
     if state is None or state.owner != principal:
         raise HTTPException(status_code=404, detail="task not found")
     return state
@@ -258,6 +279,7 @@ def _run_task(state: TaskState) -> None:
                      payload={"task": state.task})
         state.events.append({"event": "task.created", "payload": {"task": state.task}})
         state.status = "running"
+        TASK_SERVICE.mark_running(state.task_id)
 
         sandbox = _build_sandbox()
         result = run_agent(
@@ -298,6 +320,10 @@ def _run_task(state: TaskState) -> None:
             except Exception as exc:  # noqa: BLE001 - surface in state, do not crash
                 final_status = "failed"
                 final_error = final_error or f"anchor_seal_failed: {type(exc).__name__}: {exc}"
+        TASK_SERVICE.finish(
+            state.task_id, TaskStatus(final_status),
+            summary=final_summary, error=final_error,
+        )
         state.status = final_status
         state.summary = final_summary
         state.error = final_error
@@ -367,6 +393,8 @@ def healthz() -> JSONResponse:
         or bool(os.environ.get("VULTR_INFERENCE_API_KEY"))
     )
     ok = bool(sandbox.get("ok")) and trace_ok and model_ok
+    task_store = TASK_SERVICE.health()
+    ok = ok and bool(task_store.get("ok"))
     payload = {
         "ok": ok,
         "version": "0.1.0",
@@ -374,6 +402,7 @@ def healthz() -> JSONResponse:
         "trace_bad": trace_error,
         "sandbox": sandbox,
         "model_configured": model_ok,
+        "task_store": task_store,
     }
     return JSONResponse(payload, status_code=200 if ok else 503)
 
@@ -403,6 +432,9 @@ def create_task(body: dict[str, Any], request: Request,
     state = TaskState(task_id=task_id, trace_id=trace_id, task=task, owner=principal)
     with _LOCK:
         TASKS[task_id] = state
+    TASK_SERVICE.create(
+        task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
+    )
     try:
         threading.Thread(target=_run_task, args=(state,), daemon=True).start()
     except Exception:
