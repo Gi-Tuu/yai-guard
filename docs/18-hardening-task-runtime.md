@@ -1,7 +1,29 @@
 # 18 · 任务运行时硬化设计与迁移方案
 
-> 状态：WP1 骨架 + WP2 TaskService 桥接已落地；默认 memory，不改变现有线上行为  
+> 状态：WP1–WP6、WP9（queued 重启重排）与 interrupted 证据已实现；生产使用 `TASK_STORE=sqlite`。  
 > 目标：为取消、队列、审批、重启恢复、周期性孤儿回收和证据签名升级提供单一任务事实源。
+
+## 0. 当前实现状态（2026-11-04）
+
+```text
+WP1  Task Store / 状态机 / lease / approvals     done
+WP2  TaskService 桥接 + 降级                      done
+WP3  worker pool / TASK_CONCURRENCY / 审批表      done
+WP4  协作取消 + 审批唤醒 + cancelled 终态          done
+WP5  任务 deadline watchdog                       done
+WP6  SQLite-aware orphan reaper                   done
+WP9  queued 重启重排 + 周期重试                    done
+      task.interrupted 证据 + bundle 规则           done
+```
+
+生产语义：
+
+- `TASK_STORE=sqlite`，内存仍是 API 热路径，SQLite 为权威恢复来源；
+- 重启时 `running/waiting_approval → interrupted`，并补写 `task.interrupted`；
+- `queued` 自动重排，已取消的 queued 直接转 `cancelled`；
+- 审批等待不占执行槽；到 deadline 记录 `task_timeout`；
+- reaper 只清理终态/queued/未知/lease 过期容器，活跃 lease 不碰；
+- 证据签名支持 Ed25519 固定公钥与 v1 HMAC。
 
 ## 1. 为什么先做 Task Store
 

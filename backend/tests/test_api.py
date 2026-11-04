@@ -400,6 +400,7 @@ class ApiSecurityTest(unittest.TestCase):
         with mock.patch.object(api, "TASK_SERVICE", service), \
                 mock.patch.object(api, "_TASK_EXECUTOR", executor), \
                 mock.patch.object(api, "_reserve_queue_slot", return_value=True), \
+                mock.patch.object(api, "_DISPATCHED_QUEUED", set()), \
                 mock.patch.dict(api.TASKS, {}, clear=True):
             summary = api._requeue_queued_tasks()
             self.assertEqual(summary["requeued"], ["q1"])
@@ -407,6 +408,12 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertEqual(executor.submitted[0].status, "queued")
             self.assertIn(("q2", TaskStatus.CANCELLED), service.finished)
             self.assertIn("q1", api.TASKS)
+
+            again = api._requeue_queued_tasks()
+            self.assertEqual(again["requeued"], [])
+            self.assertEqual(len(executor.submitted), 1)
+            self.assertIn({"task_id": "q1", "reason": "already_dispatched"},
+                          again["skipped"])
 
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:
