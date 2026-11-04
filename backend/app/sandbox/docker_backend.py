@@ -434,6 +434,10 @@ class DockerSandbox:
             })
         return containers
 
+    def remove_orphan(self, task_id: str) -> dict:
+        """Remove a container by task-derived name, even if no backend owns it."""
+        return self.destroy(task_id)
+
     def reap_orphans(self) -> list[str]:
         """Remove sandbox containers left by a crashed/restarted app.
 

@@ -66,6 +66,21 @@ def host_snapshot(x_sandbox_token: str | None = Header(default=None)) -> dict[st
     return {"ok": True, "snapshot": _backend.host_snapshot()}
 
 
+@app.delete("/v1/containers/{task_id}")
+def remove_orphan_container(task_id: str,
+                            x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """Remove a labeled container even when no in-process backend owns it."""
+    _auth(x_sandbox_token)
+    result = _backend.remove_orphan(task_id)
+    if not result.get("verified"):
+        raise HTTPException(status_code=500, detail={
+            "error": "orphan remove could not be verified", "result": result,
+        })
+    with _BACKEND_LOCK:
+        _BACKENDS.pop(task_id, None)
+    return {"ok": True, **result}
+
+
 @app.get("/v1/containers")
 def list_containers(x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
