@@ -204,7 +204,7 @@ def verify_bundle_dict(
             }
         )
         return result
-    if last not in ("sandbox.destroy.confirmed", "sandbox.destroyed"):
+    if last != "sandbox.destroy.confirmed":
         return _fail(result, "INCOMPLETE", "missing_confirmed_cleanup")
 
     expected_sandbox = _sandbox_from_events(events)
@@ -227,6 +227,19 @@ def verify_bundle_dict(
         if key in sandbox and sandbox.get(key) != expected_sandbox.get(key):
             return _fail(result, "FAILED", f"sandbox_{key}_mismatch")
     result["sandbox_ok"] = True
+
+    raw_cleanup = events[-1].get("payload") or {}
+    lifecycle = bundle.get("lifecycle") or {}
+    bundle_cleanup = lifecycle.get("destroy")
+    if not bundle_cleanup:
+        return _fail(result, "INCOMPLETE", "missing_bundle_cleanup")
+    if bundle_cleanup != raw_cleanup:
+        return _fail(result, "FAILED", "cleanup_metadata_mismatch")
+    expected_confirmed = bool((raw_cleanup.get("cleanup") or {}).get("verified"))
+    if lifecycle.get("confirmed") is not expected_confirmed:
+        return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
+    if not expected_confirmed:
+        return _fail(result, "INCOMPLETE", "cleanup_not_confirmed")
 
     expected_execution = _execution_from_events(events)
     execution = (bundle.get("execution") or {}).get("results") or []
