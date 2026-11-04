@@ -734,8 +734,13 @@ def _multi_recovery_loop() -> None:
         if not _try_maintenance_lock():
             continue
         try:
-            TASK_SERVICE.recover_expired()
+            recovered = TASK_SERVICE.recover_expired()
             TASK_SERVICE.expire_approvals_before(time.time())
+            if recovered:
+                try:
+                    _run_orphan_reaper(grace_s=0)
+                except Exception:  # noqa: BLE001
+                    pass
             _record_interrupted_events()
             if time.time() >= next_prune:
                 _prune_old_state()
