@@ -91,7 +91,7 @@ def verify_trace_file(
     """
     p = Path(path)
     events, error = _read_events(p)
-    terminal = task_status in ("completed", "failed", "cancelled")
+    terminal = task_status in ("completed", "failed", "cancelled", "interrupted")
     result: dict[str, Any] = {
         "ok": False, "status": "UNVERIFIABLE", "reason": error, "events": len(events),
         "chain_ok": False, "sequence_ok": False, "completeness_ok": None,
@@ -130,6 +130,10 @@ def verify_trace_file(
         result["completeness_ok"] = bool(
             "task.cancelled" in kinds and last == "sandbox.destroy.confirmed"
         )
+    elif task_status == "interrupted":
+        # Recovery proves the interruption; a confirmed cleanup is nice but not
+        # required because the crashed process never got to write it.
+        result["completeness_ok"] = "task.interrupted" in kinds
 
     anchor_present = bool(anchor_path) and Path(anchor_path).exists()
     if anchor_path is not None and not anchor_present:
@@ -182,7 +186,7 @@ def verify_trace_file(
     elif strict and terminal:
         if anchor_path is None or result["anchor_ok"] is not True:
             result["status"] = "INCOMPLETE" if result["anchor_ok"] is not False else "FAILED"
-        elif result["cleanup_ok"] is not True:
+        elif result["cleanup_ok"] is not True and task_status != "interrupted":
             result["status"] = "INCOMPLETE"
         elif hmac_key and result["authentic"] is not True:
             result["status"] = "FAILED"

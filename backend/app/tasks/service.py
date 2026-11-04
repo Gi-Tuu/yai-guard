@@ -196,6 +196,15 @@ class TaskService:
             self._mark_degraded(exc)
             return []
 
+    def interrupted_tasks(self) -> list[TaskRecord]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.list_tasks(status=TaskStatus.INTERRUPTED, limit=500)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return []
+
     def get_record(self, task_id: str) -> TaskRecord | None:
         if self.store is None:
             return None
