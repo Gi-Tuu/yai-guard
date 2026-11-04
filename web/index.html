@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YAI Guard · Secure Autonomous Execution</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>YAI GUARD</h1>
+    <span class="tag">Autonomy Without Uncontrolled Access</span>
+  </div>
+  <div class="header-right">
+    <span class="chip" id="policy-chip">policy …</span>
+    <span class="status" id="status">idle</span>
+  </div>
+</header>
+
+<main>
+  <section class="column">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Task</h2>
+        <span class="hint">Natural language → Planner → Sandboxed execution</span>
+      </div>
+      <textarea id="task" placeholder="Example: create main.py that computes 1+1, run it, then try rm -rf /, and summarize the real output"></textarea>
+      <div class="row">
+        <button id="submit">Run Task</button>
+        <button class="ghost" id="demo">Load demo task</button>
+        <input id="token" class="token" type="password" placeholder="X-Demo-Token (optional)" autocomplete="off" />
+        <span class="hint" id="task-hint"></span>
+      </div>
+    </div>
+
+    <div class="panel grow">
+      <div class="panel-head">
+        <h2>Execution Timeline</h2>
+        <span class="hint" id="timeline-count">0 events</span>
+      </div>
+      <div id="timeline" class="timeline">
+        <div class="empty">Submit a task to see model planning, policy decisions, sandbox execution, and approvals grouped by step.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="column">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Host Integrity Panel</h2>
+        <span class="badge" id="host-status">collecting</span>
+      </div>
+      <table class="kv" id="host-table">
+        <thead><tr><th>Metric</th><th>Before task</th><th>After task</th><th>Verdict</th></tr></thead>
+        <tbody><tr><td colspan="4" class="empty">Waiting for host fingerprints from sandbox.created / sandbox.exec</td></tr></tbody>
+      </table>
+      <div class="hint" id="host-note">Data comes from host_fingerprint / host_before / host_after in the trace.</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Containment Lab</h2>
+        <span class="badge" id="lab-status">not run</span>
+      </div>
+      <div class="row">
+        <button id="lab-run">Run 4 probes</button>
+        <span class="hint" id="lab-note">Direct sandbox checks: read-only root, network, docker socket, secrets.</span>
+      </div>
+      <table class="kv" id="lab-table">
+        <thead><tr><th>Probe</th><th>Exit</th><th>Result</th><th>Evidence</th></tr></thead>
+        <tbody><tr><td colspan="4" class="empty">No probes yet</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="panel grow">
+      <div class="panel-head">
+        <h2>Audit Trace</h2>        <span class="hint" id="trace-meta">not loaded</span>
+      </div>
+      <div class="row">
+        <button class="ghost" id="trace-load" disabled>Load events</button>
+        <button class="ghost" id="trace-download" disabled>Download trace.jsonl</button>
+        <button class="ghost" id="trace-verify" disabled>Verify integrity</button>
+        <button class="ghost" id="evidence-download" disabled>Download evidence bundle</button>
+        <span class="badge" id="verify-badge">not verified</span>
+      </div>
+      <div class="trace-wrap">
+        <table class="trace" id="trace-table">
+          <thead><tr><th>seq</th><th>time</th><th>actor</th><th>event</th><th>summary</th></tr></thead>
+          <tbody><tr><td colspan="5" class="empty">No trace yet</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

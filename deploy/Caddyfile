@@ -1,0 +1,17 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+  encode zstd gzip
+
+  reverse_proxy api:8000 {
+    # SSE 必须关闭缓冲，否则时间线不会实时出现
+    flush_interval -1
+  }
+
+  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  header X-Content-Type-Options "nosniff"
+  header X-Frame-Options "DENY"
+  header Referrer-Policy "no-referrer"
+}

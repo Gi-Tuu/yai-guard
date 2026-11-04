@@ -1,0 +1,38 @@
+# 执行面：只跑 Sandbox Controller + Docker；无任何 LLM 密钥。
+# 安全说明：
+# - docker.sock 只挂给 controller 这一个容器，绝不挂给 app。
+# - controller 以非 root uid 10001 运行；仅通过 group_add 获得 socket 所在组的权限。
+# - DOCKER_GID 必须等于宿主机 /var/run/docker.sock 的组 ID：
+#     stat -c '%g' /var/run/docker.sock
+#   （Docker Desktop 上通常是 0；Vultr Ubuntu 上通常是 docker 组的 GID）
+services:
+  controller:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile.controller
+    restart: unless-stopped
+    command: ["uvicorn", "app.controller:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN}
+      SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-yaiguard/sandbox-py:1.0}
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID (stat -c '%g' /var/run/docker.sock)}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      # 只绑定 VPC 私网地址；不要改成 0.0.0.0
+      - "${SANDBOX_PRIVATE_IP:?set SANDBOX_PRIVATE_IP}:9000:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

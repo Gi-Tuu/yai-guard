@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "workspace": "/workspace",
+  "limits": {
+    "cpu": 1.0,
+    "memory_mb": 512,
+    "pids": 128,
+    "nofile": 512,
+    "command_timeout_s": 120,
+    "task_timeout_s": 900,
+    "max_steps": 20,
+    "max_output_bytes": 8192,
+    "max_total_output_bytes": 1048576
+  },
+  "filesystem": {
+    "write_roots": ["/workspace"],
+    "read_roots": ["/workspace", "/usr", "/etc"],
+    "deny_patterns": [
+      "/etc/shadow",
+      "/etc/gshadow",
+      "/etc/sudoers",
+      "/etc/sudoers.d/*",
+      "/proc/*/environ",
+      "/proc/*/mem",
+      "/proc/kcore",
+      "/sys/*",
+      "/dev/*",
+      "/root/*",
+      "/home/*/.ssh/*",
+      "/home/*/.aws/*",
+      "/home/*/.kube/config",
+      "**/.ssh/id_*",
+      "**/.aws/credentials",
+      "**/.docker/config.json"
+    ]
+  },
+  "commands": {
+    "deny_binaries": [
+      "mkfs", "mkfs.ext4", "mkfs.xfs", "fdisk", "parted", "dd", "mount", "umount",
+      "pivot_root", "chroot", "insmod", "modprobe", "rmmod", "reboot", "shutdown",
+      "halt", "poweroff", "init", "systemctl", "service", "journalctl", "iptables",
+      "nft", "nsenter", "unshare", "setcap", "sudo", "su", "pkexec", "doas",
+      "docker", "kubectl", "crictl", "nc", "ncat", "netcat", "socat"
+    ],
+    "deny_patterns": [
+      {"id": "D-PYTHON-INLINE-DANGER", "pattern": "python[0-9.]*\\s+(-c|--command)\\s+.*(rmtree\\s*\\(|shutil\\.rmtree|subprocess\\.(run|call|Popen)[^;]*(rm|sh|bash)|os\\.system\\s*\\([^)]*(rm\\s+-rf|/etc|/root|/workspace/\\.\\.))", "reason": "inline Python performs destructive operations", "risk": "critical"},
+      {"id": "D-RM-ROOT", "pattern": "(^|[\\s;&|(\\x60])rm\\s+(-[^\\s]+\\s+)*-(rf|fr)\\s+(/|/\\*|~|\\$HOME)(\\s|$|[);&|(\\x60])", "reason": "recursive delete of root/home is forbidden", "risk": "critical"},
+      {"id": "D-RM-NO-PRESERVE", "pattern": "--no-preserve-root", "reason": "GNU failsafe bypass is forbidden", "risk": "critical"},
+      {"id": "D-FORK-BOMB", "pattern": ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:", "reason": "fork bomb", "risk": "critical"},
+      {"id": "D-FORK-BOMB-2", "pattern": "(^|[\\s;&|])([A-Za-z_]\\w*)\\s*\\(\\s*\\)\\s*\\{\\s*\\2\\s*\\|\\s*\\2\\s*&\\s*\\}\\s*;\\s*\\2", "reason": "self-recursive fork bomb", "risk": "critical"},
+      {"id": "D-DEV-WRITE", "pattern": ">\\s*/dev/(sd|nvme|vd|hd)", "reason": "raw block device write", "risk": "critical"},
+      {"id": "D-DD-DEV", "pattern": "\\bdd\\b.*\\bof=/dev/", "reason": "dd to block device", "risk": "critical"},
+      {"id": "D-CHMOD-ROOT", "pattern": "chmod\\s+(-R\\s+)?(777|a\\+rwx)\\s+/", "reason": "world-writable root", "risk": "critical"},
+      {"id": "D-CURL-PIPE-SH", "pattern": "(curl|wget|fetch)\\b[^|;]*\\|\\s*(sudo\\s+)?(ba|z|k|da)?sh\\b", "reason": "remote script piped to shell", "risk": "critical"},
+      {"id": "D-BASE64-PIPE-SH", "pattern": "base64\\s+(-d|--decode)\\b[^|]*\\|\\s*(ba|z|da)?sh", "reason": "obfuscated script execution", "risk": "critical"},
+      {"id": "D-PIPE-SHELL", "pattern": "\\|\\s*(sudo\\s+)?(ba|z|k|da|a)?sh\\b", "reason": "arbitrary content piped into a shell", "risk": "critical"},
+      {"id": "D-INFINITE-LOOP", "pattern": "(^|[\\s;&|])while\\s+(true|:)\\s*;?\\s*do", "reason": "unbounded shell loop", "risk": "high"},
+      {"id": "D-FIND-DELETE", "pattern": "\\bfind\\b[^;&|]*\\s-delete\\b", "reason": "find -delete mass deletion", "risk": "high"},
+      {"id": "D-REVERSE-SHELL", "pattern": "(/dev/(tcp|udp)/|bash\\s+-i\\s+>&|nc\\s+-[a-z]*e\\s)", "reason": "reverse shell", "risk": "critical"},
+      {"id": "D-METADATA", "pattern": "169\\.254\\.169\\.254|metadata\\.(google|azure|internal)", "reason": "cloud metadata endpoint", "risk": "critical"},
+      {"id": "D-DOCKER-SOCK", "pattern": "/var/run/docker\\.sock", "reason": "container runtime socket access", "risk": "critical"},
+      {"id": "D-CREDENTIAL", "pattern": "(/etc/shadow|\\.aws/credentials|\\.ssh/id_[a-z0-9]+|\\.kube/config|/proc/(1|self)/environ)", "reason": "credential path access", "risk": "critical"},
+      {"id": "D-EVAL", "pattern": "\\beval\\b", "reason": "eval of dynamic code", "risk": "high"}
+    ],
+    "allow_binaries": [
+      "python", "python3", "ls", "cat", "head", "tail", "grep", "wc", "sed", "awk",
+      "jq", "sha256sum", "diff", "find", "mkdir", "touch", "echo", "pwd", "uname",
+      "whoami", "id", "date", "sort", "uniq", "cut", "tr", "stat", "file", "du", "df"
+    ],
+    "require_approval_binaries": [
+      "rm", "rmdir", "mv", "cp", "chmod", "chown", "pip", "pip3", "apt", "apt-get",
+      "npm", "yarn", "pnpm", "git", "curl", "wget", "tee", "sed"
+    ],
+    "require_approval_patterns": [
+      {"id": "R-SHELL-C", "pattern": "(^|[\\s;&|])(sh|bash|zsh|dash)\\s+(-[^\\s]*c)", "reason": "shell -c executes arbitrary command strings", "risk": "high"},
+      {"id": "R-SOURCE", "pattern": "(^|[\\s;&|])(source|\\.)\\s+\\S+", "reason": "sourcing external scripts", "risk": "high"}
+    ]
+  },
+  "network": {
+    "default": "deny",
+    "egress_allow": ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"]
+  },
+  "approval": {
+    "ttl_s": 120
+  }
+}
