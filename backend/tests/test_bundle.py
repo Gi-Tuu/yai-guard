@@ -48,6 +48,10 @@ class BundleTest(unittest.TestCase):
         result = verify_bundle_dict(bundle, hmac_key="k")
         self.assertEqual(result["status"], "VERIFIED")
         self.assertTrue(result["ok"])
+        self.assertTrue(result["content_ok"])
+        self.assertTrue(result["signature_ok"])
+        self.assertTrue(result["fully_verified"])
+        self.assertEqual(result["verification_level"], "signed")
 
     def test_tampered_event_fails(self) -> None:
         self._make()
@@ -81,6 +85,86 @@ class BundleTest(unittest.TestCase):
         result = verify_bundle_dict(bundle)
         self.assertEqual(result["status"], "INCOMPLETE")
 
+    def test_bundle_sandbox_metadata_must_match_events(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["sandbox"]["container_id"] = "tampered"
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(result["sandbox_ok"])
+
+    def test_bundle_execution_metadata_must_match_events(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["execution"]["results"][0]["exit_code"] = 1
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(result["execution_ok"])
+
+    def test_bundle_task_status_must_match_events(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["task"]["status"] = "failed"
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+
+    def test_bundle_final_hash_must_match_last_event(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["trace"]["final_hash"] = "sha256:" + "0" * 64
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(result["final_hash_ok"])
+
+    def test_anchor_trace_id_must_match_bundle(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["trace"]["anchor"]["trace_id"] = "tr_other"
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+
+    def test_unsigned_bundle_is_content_only(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        result = verify_bundle_dict(bundle)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertTrue(result["content_ok"])
+        self.assertIsNone(result["signature_ok"])
+        self.assertFalse(result["fully_verified"])
+        self.assertEqual(result["verification_level"], "content_only")
+
+    def test_anchor_event_count_mismatch_fails(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["trace"]["anchor"]["events"] = 999
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["reason"], "anchor_event_count_mismatch")
+
+    def test_anchor_final_hash_mismatch_fails(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["trace"]["anchor"]["final_hash"] = "sha256:" + "0" * 64
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["reason"], "anchor_final_hash_mismatch")
+
+    def test_bundle_sandbox_backend_mismatch_fails(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["sandbox"]["backend"] = "fake"
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["reason"], "sandbox_backend_mismatch")
+
+    def test_hmac_key_requires_signed_anchor(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        bundle["trace"]["anchor"].pop("hmac", None)
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["reason"], "hmac_missing")
+        self.assertFalse(result["signature_ok"])
 
 if __name__ == "__main__":
     unittest.main()
