@@ -88,6 +88,31 @@ app = FastAPI(title="YAI Guard", version="0.1.0")
 POLICY = PolicyEngine.from_file()
 _LOCK = threading.Lock()
 
+# Durable task runtime is single-writer by design. An advisory file lock makes
+# a second uvicorn worker/process fail closed instead of double-executing tasks.
+_RUNTIME_LOCK_HANDLE = None
+_RUNTIME_LOCK_OK = True
+
+
+def _acquire_runtime_lock() -> bool:
+    global _RUNTIME_LOCK_HANDLE
+    if not TASK_SERVICE.enabled:
+        return True
+    try:
+        import fcntl
+    except ImportError:  # non-Unix local development; CI/runtime is Linux
+        return True
+    try:
+        handle = open(ARTIFACTS / "task-runtime.lock", "a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _RUNTIME_LOCK_HANDLE = handle
+        return True
+    except OSError:
+        return False
+
+
+_RUNTIME_LOCK_OK = _acquire_runtime_lock()
+
 
 @dataclass
 class TaskState:
@@ -554,12 +579,32 @@ def _record_interrupted_events() -> list[str]:
         try:
             trace = TraceStore(path, record.trace_id)
             events = trace.read()
-            if not events or any(e.get("event") == "task.interrupted" for e in events):
+            if not events:
                 continue
-            if any(e.get("event") in ("task.completed", "task.failed", "task.cancelled")
-                   for e in events):
-                # Crash window: the task already wrote a terminal event but the
-                # DB update did not land. Never append a second terminal event.
+            terminal_events = [
+                e for e in events
+                if e.get("event") in ("task.completed", "task.failed", "task.cancelled")
+            ]
+            if terminal_events:
+                if len(terminal_events) == 1:
+                    # Crash window: the trace reached a terminal state but the
+                    # DB update did not land. Reconcile DB to the trace instead
+                    # of appending a second terminal event.
+                    event = terminal_events[0]
+                    payload = event.get("payload") or {}
+                    target = {
+                        "task.completed": TaskStatus.COMPLETED,
+                        "task.failed": TaskStatus.FAILED,
+                        "task.cancelled": TaskStatus.CANCELLED,
+                    }[event["event"]]
+                    TASK_SERVICE.reconcile_terminal(
+                        record.id, target,
+                        summary=str(payload.get("summary", "")),
+                        error=payload.get("error") or payload.get("reason"),
+                    )
+                    recorded.append(record.id)
+                continue
+            if any(e.get("event") == "task.interrupted" for e in events):
                 continue
             trace.append(
                 task_id=record.id, actor="system", event="task.interrupted",
@@ -641,6 +686,8 @@ def _requeue_loop() -> None:
 def _reap_stale_sandboxes() -> None:
     """Reap only containers that cannot belong to a healthy durable task."""
     global _REAPER_STARTED, _REQUEUE_STARTED
+    if not _RUNTIME_LOCK_OK:
+        return
     if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
         return
     if TASK_SERVICE.enabled:
@@ -698,7 +745,7 @@ def healthz() -> JSONResponse:
     )
     ok = bool(sandbox.get("ok")) and trace_ok and model_ok
     task_store = TASK_SERVICE.health()
-    ok = ok and bool(task_store.get("ok"))
+    ok = ok and bool(task_store.get("ok")) and _RUNTIME_LOCK_OK
     payload = {
         "ok": ok,
         "version": "0.1.0",
@@ -707,6 +754,7 @@ def healthz() -> JSONResponse:
         "sandbox": sandbox,
         "model_configured": model_ok,
         "task_store": task_store,
+        "runtime_lock": {"ok": _RUNTIME_LOCK_OK},
         "concurrency": {
             "execution_slots": TASK_CONCURRENCY,
             "waiting_threads": TASK_WAITING_THREADS,
@@ -736,6 +784,9 @@ def create_task(body: dict[str, Any], request: Request,
         raise HTTPException(status_code=413, detail="task is too large")
     _enforce_rate_limit(request)
     _prune_tasks()
+    if TASK_SERVICE.enabled and not _RUNTIME_LOCK_OK:
+        raise HTTPException(status_code=503,
+                            detail="another app instance owns the task runtime")
 
     # 有界队列：超过队列上限才拒绝；任务提交到 worker 池，状态先为 queued。
     if not _reserve_queue_slot():

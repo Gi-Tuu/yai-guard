@@ -64,6 +64,18 @@ class TaskServiceTest(unittest.TestCase):
         self.assertGreater(service.get_record("tk").lease_until, lease)
         service.close()
 
+    def test_reconcile_interrupted_to_trace_terminal(self) -> None:
+        service = TaskService.from_path(self.path)
+        service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+        service.mark_running("tk")
+        service.finish("tk", TaskStatus.INTERRUPTED, error="app restart")
+        repaired = service.reconcile_terminal(
+            "tk", TaskStatus.COMPLETED, summary="landed after seal",
+        )
+        self.assertEqual(repaired.status, TaskStatus.COMPLETED)
+        self.assertEqual(service.get_record("tk").status, TaskStatus.COMPLETED)
+        service.close()
+
     def test_restart_expires_pending_approvals(self) -> None:
         first = TaskService.from_path(self.path)
         first.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")

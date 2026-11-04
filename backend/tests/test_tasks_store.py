@@ -8,6 +8,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -173,6 +174,32 @@ class TaskStoreTest(unittest.TestCase):
         self._create("q2")
         self.store.claim_next(worker_id="w1")
         self.assertEqual([record.id for record in self.store.list_queued()], ["q2"])
+
+    def test_prune_removes_only_old_terminal_tasks(self) -> None:
+        self._create("old")
+        self.store.transition("old", TaskStatus.FAILED, finished_at=1000,
+                              error="old failure")
+        self.store.create_approval(task_id="old", call_id="c1", owner="u1", ttl_s=60)
+        self._create("active")
+        listed = self.store.list_terminal_before(2000)
+        self.assertEqual([record.id for record in listed], ["old"])
+        removed = self.store.prune_terminal_before(2000)
+        self.assertEqual([record.id for record in removed], ["old"])
+        self.assertIsNone(self.store.get_task("old"))
+        self.assertIsNotNone(self.store.get_task("active"))
+        self.assertIsNone(self.store.get_approval("old", "c1"))
+
+    def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
+        version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
+        self.assertEqual(int(version), 1)
+        self.store.close()
+        reopened = TaskStore(self.path)
+        try:
+            self.assertEqual(
+                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 1,
+            )
+        finally:
+            reopened.close()
 
 
 if __name__ == "__main__":
