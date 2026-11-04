@@ -191,5 +191,49 @@ class BundleTest(unittest.TestCase):
         result = verify_bundle_dict(bundle)
         self.assertEqual(result["status"], "INCOMPLETE")
 
+    def test_policy_metadata_must_match_events(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="policy", event="policy.decision",
+                          payload={"tool": "run_command"},
+                          policy={"effect": "deny", "rule_id": "D-TEST",
+                                  "reason": "test rule", "risk": "high"})
+        self.store.append(task_id="tk", actor="sandbox", event="sandbox.exec",
+                          execution={"argv": "echo hi", "exit_code": 0})
+        self.store.append(task_id="tk", actor="agent", event="task.completed", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
+                          payload={"cleanup": {"verified": True}})
+        self.store.seal(self.anchor, hmac_key="k")
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["policy"]["decisions"][0]["rule_id"] = "D-TAMPERED"
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["reason"], "policy_metadata_mismatch")
+
+    def test_approval_metadata_must_match_events(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="system", event="approval.resolved",
+                          payload={"call_id": "call_1", "approved": True})
+        self.store.append(task_id="tk", actor="sandbox", event="sandbox.exec",
+                          execution={"argv": "echo hi", "exit_code": 0})
+        self.store.append(task_id="tk", actor="agent", event="task.completed", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
+                          payload={"cleanup": {"verified": True}})
+        self.store.seal(self.anchor, hmac_key="k")
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["approvals"][0]["payload"]["approved"] = False
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["reason"], "approval_metadata_mismatch")
+
 if __name__ == "__main__":
     unittest.main()
