@@ -370,6 +370,8 @@ def _run_task(state: TaskState) -> None:
     final_summary = ""
     final_error: str | None = None
     deadline_timer: threading.Timer | None = None
+    with _DISPATCH_LOCK:
+        _DISPATCHED_QUEUED.discard(state.task_id)
     _release_queue_slot()
     _EXEC_SLOTS.acquire()
     try:
@@ -475,6 +477,9 @@ def _trace_health() -> tuple[bool, str | None]:
 
 
 _REAPER_STARTED = False
+_REQUEUE_STARTED = False
+_DISPATCH_LOCK = threading.Lock()
+_DISPATCHED_QUEUED: set[str] = set()
 
 
 def _run_orphan_reaper(*, grace_s: float = 60.0, dry_run: bool = False) -> dict[str, Any]:
@@ -524,7 +529,7 @@ def _record_interrupted_events() -> list[str]:
 
 
 def _requeue_queued_tasks() -> dict[str, Any]:
-    """Re-dispatch only queued tasks after restart; active work is never re-run."""
+    """Re-dispatch queued tasks; dispatched-but-not-started ones are not duplicated."""
     summary: dict[str, Any] = {"requeued": [], "cancelled": [], "skipped": []}
     if not TASK_SERVICE.enabled:
         summary["skipped"].append("task store disabled")
@@ -533,6 +538,11 @@ def _requeue_queued_tasks() -> dict[str, Any]:
         summary["skipped"].append("disabled_by_env")
         return summary
     for record in TASK_SERVICE.queued_tasks():
+        with _DISPATCH_LOCK:
+            already_dispatched = record.id in _DISPATCHED_QUEUED
+        if already_dispatched:
+            summary["skipped"].append({"task_id": record.id, "reason": "already_dispatched"})
+            continue
         if record.cancel_requested:
             TASK_SERVICE.finish(
                 record.id, TaskStatus.CANCELLED,
@@ -551,10 +561,14 @@ def _requeue_queued_tasks() -> dict[str, Any]:
         if not _reserve_queue_slot():
             summary["skipped"].append({"task_id": record.id, "reason": "queue_full"})
             continue
+        with _DISPATCH_LOCK:
+            _DISPATCHED_QUEUED.add(record.id)
         try:
             _TASK_EXECUTOR.submit(_run_task, state)
         except Exception as exc:  # noqa: BLE001
             _release_queue_slot()
+            with _DISPATCH_LOCK:
+                _DISPATCHED_QUEUED.discard(record.id)
             TASKS.pop(record.id, None)
             summary["skipped"].append({
                 "task_id": record.id,
@@ -565,10 +579,20 @@ def _requeue_queued_tasks() -> dict[str, Any]:
     return summary
 
 
+def _requeue_loop() -> None:
+    interval = max(10, int(os.environ.get("REQUEUE_INTERVAL_S", "30")))
+    while True:
+        time.sleep(interval)
+        try:
+            _requeue_queued_tasks()
+        except Exception:  # noqa: BLE001 - background retry must not crash
+            pass
+
+
 @app.on_event("startup")
 def _reap_stale_sandboxes() -> None:
     """Reap only containers that cannot belong to a healthy durable task."""
-    global _REAPER_STARTED
+    global _REAPER_STARTED, _REQUEUE_STARTED
     if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
         return
     if TASK_SERVICE.enabled:
@@ -583,6 +607,11 @@ def _reap_stale_sandboxes() -> None:
             _requeue_queued_tasks()
         except Exception:  # noqa: BLE001 - do not block startup
             pass
+        if (os.environ.get("REQUEUE_ON_STARTUP", "1") != "0"
+                and not _REQUEUE_STARTED):
+            _REQUEUE_STARTED = True
+            threading.Thread(target=_requeue_loop, name="queued-requeue",
+                             daemon=True).start()
         try:
             _record_interrupted_events()
         except Exception:  # noqa: BLE001 - do not block startup

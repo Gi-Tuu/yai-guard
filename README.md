@@ -59,6 +59,25 @@ Sandbox host ── controller ── Docker
 - **Sandbox host:** runs the controller and the Docker daemon. The controller only listens on loopback; the app reaches it through an encrypted channel.
 - **Sandbox container:** created per task, destroyed after the task, with a read-only root filesystem, no network and resource caps.
 
+### Task runtime
+
+When `TASK_STORE=sqlite`, the app keeps a durable task record alongside the in-memory
+runtime:
+
+- bounded worker pool (`TASK_CONCURRENCY`, default 1) and a bounded queue;
+- `cancel_requested` plus a cooperative `should_cancel` check at step boundaries;
+- approval waiting releases the execution slot and is deadline-capped;
+- per-task deadline watchdog records `task_timeout`;
+- startup recovery marks `running`/`waiting_approval` as `interrupted` and appends a
+  `task.interrupted` trace event (no re-execution);
+- `queued` tasks are re-dispatched after restart, with a periodic retry and no
+  duplicate dispatch; already-cancelled queued tasks become `cancelled`;
+- a SQLite-aware orphan reaper removes containers only for terminal, queued, unknown
+  or lease-expired tasks, never for a healthy active lease.
+
+Approval and task transitions are written through `TaskService`; a SQLite failure is
+surfaced as degraded health instead of breaking task creation.
+
 ---
 
 ## Security properties
@@ -72,6 +91,8 @@ Sandbox host ── controller ── Docker
 | Bounded execution | Per-stream and total output limits; timeout/output overflow kills the process group and container |
 | Verified cleanup | Destroy is confirmed with `docker inspect`; failed cleanup is recorded as unverified, never successful |
 | Tamper-evident audit | SHA-256 hash chain + anchor; strict verification refuses to report VERIFIED when evidence is missing |
+| Ed25519 evidence signatures | Anchor `signature_v2` with a pinned public key; v1 HMAC remains supported |
+| Durable task runtime | SQLite task state, bounded queue, cancellation, deadline, restart recovery and orphan reaper |
 | Offline evidence | A downloadable evidence bundle contains the trace and anchor; an independent CLI re-verifies it |
 
 ---
@@ -95,6 +116,17 @@ python -m unittest discover -s backend/tests -t backend -p "test_docker_backend.
 
 # local web UI (mock model, anonymous mode for development)
 cd backend && ALLOW_ANONYMOUS=1 MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.main:app --port 8000
+
+# backup/restore the durable task DB and traces
+python scripts/backup_state.py backup --artifacts artifacts --out backups
+python scripts/backup_state.py restore backups/yai-guard-*.tar.gz --artifacts artifacts --dry-run
+
+# live operator smokes (token from environment only)
+YAI_BASE_URL=https://... YAI_DEMO_TOKEN=... python scripts/load_test.py --tasks 6 --sse 3
+YAI_BASE_URL=https://... YAI_DEMO_TOKEN=... python scripts/chaos_test.py \
+  --restart-cmd "ssh app 'systemctl restart yai-guard'" \
+  --tunnel-stop-cmd "ssh app 'systemctl stop yai-tunnel'" \
+  --tunnel-start-cmd "ssh app 'systemctl start yai-tunnel'"
 ```
 
 ---
@@ -103,9 +135,10 @@ cd backend && ALLOW_ANONYMOUS=1 MOCK_MODEL=1 SANDBOX_DRIVER=fake uvicorn app.mai
 
 ```
 backend/        FastAPI app, agent loop, policy engine, trace, sandbox clients, controller
-deploy/         Dockerfiles, compose files, Caddy config
+deploy/         Dockerfiles, compose files, Caddy config, controller launch script
 web/            dependency-free HTML/CSS/JS UI
 backend/tests/  unit, API-security, Docker and controller integration tests
+scripts/        backup, static check, offline/live smoke and load/chaos operator tools
 docs/           engineering notes and evidence
 ```
 
@@ -115,6 +148,7 @@ docs/           engineering notes and evidence
 
 - [Dual-host deployment record](docs/17-双VM部署记录.md)
 - [Security hardening report](docs/12-安全加固修复报告.md)
+- [Task runtime design](docs/18-hardening-task-runtime.md)
 - [Test and evidence report](docs/13-测试与证据报告.md)
 - [Evidence samples](docs/evidence/)
 
@@ -124,24 +158,34 @@ Verify a downloaded evidence bundle:
 # content consistency (chain, metadata, execution, cleanup, anchor)
 python -m app.trace.verify_bundle path/to/evidence.json
 
-# additionally require the anchor HMAC signature
-python -m app.trace.verify_bundle path/to/evidence.json --require-signature
+# Ed25519: pin the public key out of band to reach VERIFIED
+python -m app.trace.verify_bundle path/to/evidence.json \
+  --public-key-file path/to/ed25519-public.pem
+
+# v1 HMAC verification
+python -m app.trace.verify_bundle path/to/evidence.json --hmac-key-file path/to/key
+
+# fail unless the bundle is fully signature-verified
+python -m app.trace.verify_bundle path/to/evidence.json \
+  --public-key-file path/to/ed25519-public.pem --require-signature
 ```
 
 Status meanings:
 
 | Status | Meaning |
 |---|---|
-| `VERIFIED` | Content checks pass and the anchor signature is verified |
-| `CONTENT_VERIFIED` | Content checks pass; signature was not verified |
+| `VERIFIED` | Content checks pass and the anchor signature is verified (pinned Ed25519 or HMAC) |
+| `CONTENT_VERIFIED` | Content checks pass; signature was not verified (or only an embedded key self-check) |
 | `INCOMPLETE` | Required evidence (anchor, cleanup, sandbox or execution metadata) is missing |
 | `FAILED` | Hash chain, metadata, final hash, anchor or signature mismatch |
 | `PENDING` | Task is still running |
 
 The verifier does not trust bundle summary fields. It recomputes the hash
 chain, verifies that `container_id`, `image_id`, `runtime`, execution records,
-cleanup state and final hash match the raw events, and checks the anchor HMAC
-when a key is supplied.
+cleanup state and final hash match the raw events, and checks the anchor
+signature when a key is supplied. `cancelled` and `interrupted` are valid
+terminal outcomes; an interrupted bundle records the interruption without
+fabricating a confirmed cleanup.
 
 ## Containment Lab
 

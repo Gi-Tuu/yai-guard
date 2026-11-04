@@ -1,0 +1,69 @@
+"""Backup/restore contract test (no external services)."""
+from __future__ import annotations
+
+import json
+import pathlib
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+class BackupStateTest(unittest.TestCase):
+    def test_backup_and_restore_roundtrip(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[2]
+        script = root / "scripts" / "backup_state.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            artifacts = base / "artifacts"
+            traces = artifacts / "traces"
+            traces.mkdir(parents=True)
+            (traces / "tr_demo.jsonl").write_text('{"event":"task.created"}\n',
+                                                   encoding="utf-8")
+            conn = sqlite3.connect(artifacts / "tasks.db")
+            conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT)")
+            conn.execute("INSERT INTO tasks VALUES ('tk_demo','completed')")
+            conn.commit()
+            conn.close()
+
+            backup = subprocess.run(
+                [sys.executable, str(script), "backup",
+                 "--artifacts", str(artifacts), "--out", str(base / "backups")],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(backup.returncode, 0, backup.stderr)
+            archive = pathlib.Path(json.loads(backup.stdout)["archive"])
+            self.assertTrue(archive.exists())
+
+            restored = base / "restored"
+            dry = subprocess.run(
+                [sys.executable, str(script), "restore", str(archive),
+                 "--artifacts", str(restored), "--dry-run"],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertFalse(restored.exists())
+
+            run = subprocess.run(
+                [sys.executable, str(script), "restore", str(archive),
+                 "--artifacts", str(restored)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            conn = sqlite3.connect(restored / "tasks.db")
+            try:
+                self.assertEqual(
+                    conn.execute("SELECT status FROM tasks WHERE id='tk_demo'").fetchone(),
+                    ("completed",),
+                )
+            finally:
+                conn.close()
+            self.assertEqual(
+                (restored / "traces" / "tr_demo.jsonl").read_text(encoding="utf-8"),
+                '{"event":"task.created"}\n',
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
