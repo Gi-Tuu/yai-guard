@@ -59,9 +59,9 @@
     $('task').value = 'Create main.py that computes 1+1, run it, then try rm -rf /, and summarize the real output';
   };
 
-  $('token').value = localStorage.getItem('yaig_demo_token') || '';
+  $('token').value = sessionStorage.getItem('yaig_demo_token') || '';
   $('token').oninput = () => {
-    localStorage.setItem('yaig_demo_token', $('token').value.trim());
+    sessionStorage.setItem('yaig_demo_token', $('token').value.trim());
   };
 
   // ------------------------------------------------------------------- submit

@@ -341,6 +341,23 @@ def _trace_health() -> tuple[bool, str | None]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
+@app.on_event("startup")
+def _reap_stale_sandboxes() -> None:
+    """At app startup all in-memory tasks are gone; reap old controllers' containers."""
+    if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
+        return
+    try:
+        from app.sandbox.remote_backend import RemoteSandbox
+
+        RemoteSandbox(
+            os.environ.get("SANDBOX_BASE_URL", "http://127.0.0.1:9000"),
+            os.environ.get("SANDBOX_TOKEN", ""),
+            timeout_s=5.0,
+        ).reap_orphans()
+    except Exception:  # noqa: BLE001 - startup cleanup is best-effort
+        pass
+
+
 @app.get("/healthz")
 def healthz() -> JSONResponse:
     sandbox = _sandbox_health()

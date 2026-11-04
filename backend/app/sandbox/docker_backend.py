@@ -390,6 +390,30 @@ class DockerSandbox:
             killed_reason=result.killed_reason,
         )
 
+    def reap_orphans(self) -> list[str]:
+        """Remove sandbox containers left by a crashed/restarted app.
+
+        Only containers carrying our label are considered. This is called at
+        controller startup, when no in-process task can own a container.
+        """
+        try:
+            listing = subprocess.run(
+                [self.docker_bin, "ps", "-a", "--filter", "label=yaig.task",
+                 "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise DockerError(f"orphan listing failed: {type(exc).__name__}: {exc}") from exc
+        removed: list[str] = []
+        for name in listing.stdout.splitlines():
+            name = name.strip()
+            if not name.startswith("yaig-"):
+                continue
+            subprocess.run([self.docker_bin, "rm", "-f", name],
+                           capture_output=True, text=True, timeout=30)
+            removed.append(name)
+        return removed
+
     def host_fingerprint(self) -> dict:
         try:
             kernel = Path("/proc/version").read_text(encoding="utf-8", errors="replace")[:120]

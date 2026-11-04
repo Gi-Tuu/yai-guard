@@ -27,11 +27,13 @@ _IMAGE = os.environ.get("SANDBOX_IMAGE", "yaiguard/sandbox-py:1.0")
 _RUNTIME = os.environ.get("SANDBOX_RUNTIME") or "runc"
 _backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
 _BACKEND_LOCK = threading.Lock()
+_BACKENDS: dict[str, DockerSandbox] = {}
 
 # 启动即检查 daemon / runtime / 镜像；失败时 /healthz 返回 503，且 create 会显式报错。
 # 绝不静默把 runsc 降级成 runc（P1-6）。
 try:
     _STARTUP: dict[str, Any] = {"ok": True, **_backend.ensure_ready()}
+    _STARTUP["reaped"] = _backend.reap_orphans()
 except Exception as exc:  # noqa: BLE001 - 启动失败要作为状态暴露，而不是 crash loop
     _STARTUP = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -64,6 +66,16 @@ def host_snapshot(x_sandbox_token: str | None = Header(default=None)) -> dict[st
     return {"ok": True, "snapshot": _backend.host_snapshot()}
 
 
+@app.post("/v1/orphans/reap")
+def reap_orphans(x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """Called by the app on startup; all app-side task state is gone by then."""
+    _auth(x_sandbox_token)
+    with _BACKEND_LOCK:
+        removed = _backend.reap_orphans()
+        _BACKENDS.clear()
+    return {"ok": True, "removed": removed}
+
+
 @app.post("/v1/sandbox/{task_id}")
 def create(task_id: str, limits: dict[str, Any] | None = None,
            x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
@@ -79,12 +91,17 @@ def create(task_id: str, limits: dict[str, Any] | None = None,
         max_total_output_bytes=int(data.get("max_total_output_bytes", 1_048_576)),
     )
     with _BACKEND_LOCK:
-        _backend.create(task_id, parsed)
+        if task_id in _BACKENDS:
+            raise HTTPException(status_code=409, detail="task_id already exists")
+        backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
+        backend.create(task_id, parsed)
+        _BACKENDS[task_id] = backend
+        info = backend.sandbox_info()
     return {
         "ok": True, "task_id": task_id, "limits": parsed.to_dict(),
-        "container_id": getattr(_backend, "_container_id", None),
-        "image_id": getattr(_backend, "_image_id", None),
-        "runtime": getattr(_backend, "runtime", "runc"),
+        "container_id": info.get("container_id"),
+        "image_id": info.get("image_id"),
+        "runtime": info.get("runtime"),
     }
 
 
@@ -93,12 +110,15 @@ def execute(task_id: str, body: dict[str, Any],
             x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
     with _BACKEND_LOCK:
-        result = _backend.exec(
-            task_id,
-            str(body.get("command", "")),
-            timeout_s=int(body.get("timeout_s", 120)),
-            cwd=str(body.get("cwd", "/workspace")),
-        )
+        backend = _BACKENDS.get(task_id)
+    if backend is None:
+        raise HTTPException(status_code=404, detail="sandbox not found")
+    result = backend.exec(
+        task_id,
+        str(body.get("command", "")),
+        timeout_s=int(body.get("timeout_s", 120)),
+        cwd=str(body.get("cwd", "/workspace")),
+    )
     return {
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -116,7 +136,10 @@ async def put_file(task_id: str, path: str, request: Request,
     _auth(x_sandbox_token)
     data = await request.body()
     with _BACKEND_LOCK:
-        _backend.put_file(task_id, path, data)
+        backend = _BACKENDS.get(task_id)
+    if backend is None:
+        raise HTTPException(status_code=404, detail="sandbox not found")
+    backend.put_file(task_id, path, data)
     return {"ok": True, "bytes": len(data)}
 
 
@@ -128,8 +151,11 @@ def get_file(task_id: str, path: str, max_bytes: int = 1_048_576,
     import base64
 
     with _BACKEND_LOCK:
-        data = _backend.get_file(task_id, path, max_bytes=max_bytes,
-                                 allow_missing=allow_missing)
+        backend = _BACKENDS.get(task_id)
+    if backend is None:
+        raise HTTPException(status_code=404, detail="sandbox not found")
+    data = backend.get_file(task_id, path, max_bytes=max_bytes,
+                            allow_missing=allow_missing)
     return {"ok": True, "base64": base64.b64encode(data).decode("ascii")}
 
 
@@ -138,7 +164,10 @@ def list_files(task_id: str, path: str = "/workspace",
                x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
     with _BACKEND_LOCK:
-        entries = _backend.list_files(task_id, path)
+        backend = _BACKENDS.get(task_id)
+    if backend is None:
+        raise HTTPException(status_code=404, detail="sandbox not found")
+    entries = backend.list_files(task_id, path)
     return {"ok": True, "entries": entries}
 
 
@@ -147,9 +176,17 @@ def destroy(task_id: str,
             x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
     with _BACKEND_LOCK:
-        result = _backend.destroy(task_id)
+        backend = _BACKENDS.get(task_id)
+    if backend is None:
+        # Idempotent destroy: a retry after a successful teardown must not
+        # turn into a task failure.
+        return {"ok": True, "verified": True, "container": f"yaig-{task_id}",
+                "already_gone": True}
+    result = backend.destroy(task_id)
     if not result.get("verified"):
         raise HTTPException(status_code=500, detail={
             "error": "container destroy could not be verified", "result": result,
         })
+    with _BACKEND_LOCK:
+        _BACKENDS.pop(task_id, None)
     return {"ok": True, **result}

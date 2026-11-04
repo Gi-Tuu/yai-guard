@@ -6,6 +6,7 @@
 # - 每个决策/结果都写进 TraceStore
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from dataclasses import dataclass, field
@@ -134,7 +135,13 @@ def run_agent(
 
             ctx = EvalContext(step=step, max_steps=max_steps, elapsed_s=elapsed,
                               task_timeout_s=timeout_s, task_id=task_id)
-            response = model.complete(messages, tools=TOOL_SCHEMAS)
+            remaining_model_s = max(1, int(timeout_s - elapsed))
+            if "deadline_s" in inspect.signature(model.complete).parameters:
+                response = model.complete(
+                    messages, tools=TOOL_SCHEMAS, deadline_s=remaining_model_s
+                )
+            else:
+                response = model.complete(messages, tools=TOOL_SCHEMAS)
 
             event_type = "plan.created" if step == 1 else "agent.step"
             record(actor="agent", event=event_type, payload={

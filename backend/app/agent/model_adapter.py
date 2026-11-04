@@ -88,15 +88,21 @@ class VultrModel:
 
     # ---------------------------------------------------------------- complete
     def complete(self, messages: list[dict[str, Any]], *, tools: Any = None,
-                 model: str | None = None, max_completion_tokens: int | None = None) -> ModelResponse:
+                 model: str | None = None, max_completion_tokens: int | None = None,
+                 deadline_s: float | None = None) -> ModelResponse:
         client = self._get_client()
         target = model or self.model
         if target not in MODEL_ALLOWLIST:
             raise ValueError(f"model {target!r} is not allowed; only Vultr catalog models are permitted")
         budget = max_completion_tokens or (TOOL_ROUND_TOKENS if tools else FINAL_TOKENS)
         last_error: Exception | None = None
+        started = time.monotonic()
 
         for attempt in range(self.max_retries + 1):
+            remaining = None if deadline_s is None else deadline_s - (time.monotonic() - started)
+            if remaining is not None and remaining <= 0:
+                raise ModelError("inference deadline exceeded")
+            request_timeout = self.timeout_s if remaining is None else min(self.timeout_s, remaining)
             try:
                 resp = client.chat.completions.create(
                     model=target,
@@ -104,6 +110,7 @@ class VultrModel:
                     tools=tools or None,
                     tool_choice="auto" if tools else None,
                     max_completion_tokens=budget,
+                    timeout=request_timeout,
                 )
             except ModelFallbackError:
                 raise
@@ -111,7 +118,11 @@ class VultrModel:
                 last_error = exc
                 if not self._retryable(exc) or attempt >= self.max_retries:
                     raise ModelError(self._safe(str(exc))) from None
-                time.sleep(self._backoff(exc, attempt))
+                delay = self._backoff(exc, attempt)
+                if remaining is not None:
+                    delay = min(delay, max(0.0, remaining - 0.05))
+                if remaining is None or delay > 0:
+                    time.sleep(delay)
                 continue
 
             returned = getattr(resp, "model", target)
