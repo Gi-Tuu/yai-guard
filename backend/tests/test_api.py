@@ -223,16 +223,91 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertIn("Retry-After", res.headers)
 
     # --------------------------------------------------------- concurrency
-    def test_second_task_is_rejected_while_slot_is_busy(self) -> None:
-        acquired = api._TASK_SLOT.acquire(blocking=False)
+    def test_tasks_are_queued_when_execution_slots_are_busy(self) -> None:
+        acquired = api._EXEC_SLOTS.acquire(blocking=False)
         try:
             self.assertTrue(acquired)
             res = self.client.post("/api/tasks", json={"task": "ls /workspace"}, headers=TOKEN_A)
-            self.assertEqual(res.status_code, 429)
-            self.assertIn("concurrency", res.json()["detail"])
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["status"], "queued")
         finally:
             if acquired:
-                api._TASK_SLOT.release()
+                api._EXEC_SLOTS.release()
+        _wait(self.client, res.json()["task_id"], TOKEN_A)
+
+    def test_approval_wait_releases_execution_slot(self) -> None:
+        from app.agent.mock_model import MockModel
+        from app.policy import ToolCall
+
+        old_ttl = api.POLICY.approval_ttl
+        api.POLICY.approval_ttl = 5
+        models = [
+            MockModel(),  # reaches the approval gate
+            MockModel([ToolCall("c_finish", "finish", {"summary": "done"})]),
+        ]
+        try:
+            with mock.patch.object(api, "_build_model", side_effect=models):
+                first = self.client.post(
+                    "/api/tasks", json={"task": "approval wait"}, headers=TOKEN_A
+                )
+                first_id = first.json()["task_id"]
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if any(key[0] == first_id for key in api.PENDING):
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(any(key[0] == first_id for key in api.PENDING))
+
+                second = self.client.post(
+                    "/api/tasks", json={"task": "runs while first waits"}, headers=TOKEN_A
+                )
+                second_id = second.json()["task_id"]
+                # concurrency=1, but first is waiting for approval and must not hold the slot
+                _wait(self.client, second_id, TOKEN_A, timeout_s=5)
+                self.assertNotIn(
+                    self.client.get(f"/api/tasks/{first_id}", headers=TOKEN_A).json()["status"],
+                    ("completed", "failed"),
+                )
+
+                call_id = next(key[1] for key in api.PENDING if key[0] == first_id)
+                approved = self.client.post(
+                    f"/api/tasks/{first_id}/approvals/{call_id}",
+                    json={"approved": True}, headers=TOKEN_A,
+                )
+                self.assertEqual(approved.status_code, 200)
+                _wait(self.client, first_id, TOKEN_A, timeout_s=5)
+        finally:
+            api.POLICY.approval_ttl = old_ttl
+
+    def test_two_execution_slots_run_concurrently(self) -> None:
+        from app.agent.mock_model import ModelResponse
+        from app.policy import ToolCall
+
+        barrier = threading.Barrier(2)
+
+        class BarrierModel:
+            def complete(self, messages, *, tools=None, model=None):
+                barrier.wait(timeout=5)
+                return ModelResponse(
+                    content="ok",
+                    tool_calls=[ToolCall("c_finish", "finish", {"summary": "ok"})],
+                    finish_reason="tool_calls",
+                )
+
+        old_slots = api._EXEC_SLOTS
+        api._EXEC_SLOTS = threading.BoundedSemaphore(2)
+        try:
+            with mock.patch.object(api, "_build_model", side_effect=lambda: BarrierModel()):
+                first = self.client.post(
+                    "/api/tasks", json={"task": "concurrent 1"}, headers=TOKEN_A
+                ).json()
+                second = self.client.post(
+                    "/api/tasks", json={"task": "concurrent 2"}, headers=TOKEN_A
+                ).json()
+                _wait(self.client, first["task_id"], TOKEN_A, timeout_s=8)
+                _wait(self.client, second["task_id"], TOKEN_A, timeout_s=8)
+        finally:
+            api._EXEC_SLOTS = old_slots
 
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:

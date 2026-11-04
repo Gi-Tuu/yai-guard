@@ -25,6 +25,7 @@ import secrets
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from app.agent.loop import run_agent
 from app.agent.mock_model import MockModel
 from app.policy import Decision, EvalContext, PolicyEngine, ToolCall
 from app.sandbox.fake_backend import FakeSandbox
-from app.tasks import TaskService, TaskStatus
+from app.tasks import ApprovalStatus, TaskService, TaskStatus
 from app.trace import TraceStore, new_trace_id, verify_trace_file
 from app.trace.bundle import build_bundle
 from app.containment import run_containment
@@ -85,8 +86,17 @@ class TaskState:
 TASKS: dict[str, TaskState] = {}
 PENDING: dict[tuple[str, str], dict[str, Any]] = {}
 
-# 公网 Demo 保护：全局并发 = 1（演示期串行，保证容器生命周期可控）
-_TASK_SLOT = threading.BoundedSemaphore(1)
+# 执行槽与排队：审批等待会释放执行槽，避免一个审批卡死全部任务。
+TASK_CONCURRENCY = max(1, int(os.environ.get("TASK_CONCURRENCY", "1")))
+TASK_WAITING_THREADS = max(0, int(os.environ.get("TASK_WAITING_THREADS", "4")))
+TASK_QUEUE_MAX = max(TASK_CONCURRENCY, int(os.environ.get("TASK_QUEUE_MAX", "8")))
+_EXEC_SLOTS = threading.BoundedSemaphore(TASK_CONCURRENCY)
+_TASK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=TASK_CONCURRENCY + TASK_WAITING_THREADS,
+    thread_name_prefix="yaig-task",
+)
+_QUEUE_LOCK = threading.Lock()
+_QUEUED = 0
 _SSE_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SSE_MAX_CONNECTIONS", "8")))
 _RATE_LOCK = threading.Lock()
 _RATE_HITS: dict[str, list[float]] = {}
@@ -241,7 +251,35 @@ def _build_model():
 
 
 # ------------------------------------------------------------------- approvals
-def _approver(task_id: str, owner: str):
+def _release_exec_slot() -> None:
+    try:
+        _EXEC_SLOTS.release()
+    except ValueError:  # pragma: no cover - defensive double release
+        pass
+
+
+def _acquire_exec_slot() -> None:
+    _EXEC_SLOTS.acquire()
+
+
+def _reserve_queue_slot() -> bool:
+    global _QUEUED
+    with _QUEUE_LOCK:
+        if _QUEUED >= TASK_QUEUE_MAX:
+            return False
+        _QUEUED += 1
+        return True
+
+
+def _release_queue_slot() -> None:
+    global _QUEUED
+    with _QUEUE_LOCK:
+        _QUEUED = max(0, _QUEUED - 1)
+
+
+def _approver(state: TaskState):
+    task_id, owner = state.task_id, state.owner
+
     def approve(decision: Decision, call: ToolCall) -> bool:
         key = (task_id, call.id)
         gate = threading.Event()
@@ -254,10 +292,31 @@ def _approver(task_id: str, owner: str):
                 "resolved": False,
                 "owner": owner,
             }
-        gate.wait(timeout=POLICY.approval_ttl)
+        state.status = "waiting_approval"
+        TASK_SERVICE.mark_waiting(task_id)
+        TASK_SERVICE.create_approval(
+            task_id=task_id, call_id=call.id, owner=owner,
+            ttl_s=POLICY.approval_ttl,
+        )
+
+        # 审批等待不占用执行槽：把槽让给其它任务，决定后再抢回。
+        _release_exec_slot()
+        try:
+            decided = gate.wait(timeout=POLICY.approval_ttl)
+        finally:
+            _acquire_exec_slot()
+
+        state.status = "running"
+        TASK_SERVICE.mark_resumed(task_id)
         with _LOCK:
             record = PENDING.pop(key, {"approved": False})
-        return record.get("approved") is True
+        approved = record.get("approved") is True
+        if not decided:
+            status = ApprovalStatus.EXPIRED
+        else:
+            status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+        TASK_SERVICE.resolve_approval(task_id, call.id, status)
+        return approved
 
     return approve
 
@@ -273,6 +332,8 @@ def _run_task(state: TaskState) -> None:
     final_status = "failed"
     final_summary = ""
     final_error: str | None = None
+    _release_queue_slot()
+    _EXEC_SLOTS.acquire()
     try:
         trace = TraceStore(TRACES / f"{state.trace_id}.jsonl", state.trace_id)
         trace.append(task_id=state.task_id, actor="user", event="task.created",
@@ -289,7 +350,7 @@ def _run_task(state: TaskState) -> None:
             sandbox=sandbox,
             trace=trace,
             task_id=state.task_id,
-            approver=_approver(state.task_id, state.owner),
+            approver=_approver(state),
             emit=state.events.append,
             require_claims=os.environ.get("MOCK_MODEL", "0") != "1",
         )
@@ -327,10 +388,7 @@ def _run_task(state: TaskState) -> None:
         state.status = final_status
         state.summary = final_summary
         state.error = final_error
-        try:
-            _TASK_SLOT.release()
-        except ValueError:  # pragma: no cover - only a defensive double release
-            pass
+        _release_exec_slot()
 
 
 # ---------------------------------------------------------------------- routes
@@ -403,6 +461,12 @@ def healthz() -> JSONResponse:
         "sandbox": sandbox,
         "model_configured": model_ok,
         "task_store": task_store,
+        "concurrency": {
+            "execution_slots": TASK_CONCURRENCY,
+            "waiting_threads": TASK_WAITING_THREADS,
+            "queue_max": TASK_QUEUE_MAX,
+            "queued": _QUEUED,
+        },
     }
     return JSONResponse(payload, status_code=200 if ok else 503)
 
@@ -421,10 +485,10 @@ def create_task(body: dict[str, Any], request: Request,
     _enforce_rate_limit(request)
     _prune_tasks()
 
-    # 演示期全局串行：第二个任务直接 429，而不是排队；避免容器并发撑爆沙箱 VM。
-    if not _TASK_SLOT.acquire(blocking=False):
+    # 有界队列：超过队列上限才拒绝；任务提交到 worker 池，状态先为 queued。
+    if not _reserve_queue_slot():
         raise HTTPException(status_code=429,
-                            detail="another task is already running (global concurrency = 1)",
+                            detail="task queue is full",
                             headers={"Retry-After": "10"})
 
     task_id = "tk_" + uuid.uuid4().hex[:10]
@@ -436,9 +500,11 @@ def create_task(body: dict[str, Any], request: Request,
         task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
     )
     try:
-        threading.Thread(target=_run_task, args=(state,), daemon=True).start()
+        _TASK_EXECUTOR.submit(_run_task, state)
     except Exception:
-        _TASK_SLOT.release()
+        _release_queue_slot()
+        with _LOCK:
+            TASKS.pop(task_id, None)
         raise
     return {"task_id": task_id, "trace_id": trace_id, "status": state.status}
 
@@ -513,6 +579,10 @@ def resolve_approval(task_id: str, call_id: str, body: dict[str, Any],
         record["resolved"] = True
         record["approved"] = approved
         record["event"].set()
+    TASK_SERVICE.resolve_approval(
+        task_id, call_id,
+        ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
+    )
     return {"ok": True, "approved": approved}
 
 
@@ -535,18 +605,15 @@ def verify_trace(task_id: str, principal: str = Depends(_require_principal)) -> 
 
 @app.post("/api/containment/run")
 def run_containment_lab(principal: str = Depends(_require_principal)) -> dict[str, Any]:
-    """直接跑 4 个容器边界探针；不经过 policy/LLM。"""
-    if not _TASK_SLOT.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="a task is already running")
+    """直接跑 5 个容器边界探针；不经过 policy/LLM。"""
+    if not _EXEC_SLOTS.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="all execution slots are busy")
     task_id = "ct_" + uuid.uuid4().hex[:10]
     try:
         sandbox = _build_sandbox()
         return run_containment(sandbox, task_id)
     finally:
-        try:
-            _TASK_SLOT.release()
-        except ValueError:  # pragma: no cover
-            pass
+        _release_exec_slot()
 
 
 @app.get("/api/tasks/{task_id}/evidence")
