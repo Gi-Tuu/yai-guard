@@ -1,7 +1,8 @@
-"""Containment Lab：直接通过沙箱后端执行 4 个高信号探针。
+"""Containment Lab：直接通过沙箱后端执行 5 个高信号探针。
 
 这不是策略测试，而是容器边界测试：探针不经过 policy/LLM，直接调用 sandbox.exec。
 结果只报告真实 exit code / 关键错误片段，不把“配置声明”当成证据。
+wall_clock 探针放在最后：超时会杀掉容器，之后仍执行 destroy 确认清理。
 """
 from __future__ import annotations
 
@@ -44,11 +45,20 @@ PROBES: list[dict[str, Any]] = [
                        "TRACE_HMAC_KEY", "BEGIN OPENSSH PRIVATE KEY"],
         "description": "sandbox environment must not contain app/inference/sandbox secrets",
     },
+    {
+        "name": "wall_clock",
+        "argv": "python3 -c \"import time; time.sleep(30)\"",
+        "timeout_s": 3,
+        "expect_timed_out": True,
+        "description": "a runaway loop/process must be killed at the wall-clock cap",
+    },
 ]
 
 
 def _check(probe: dict[str, Any], result: ExecResult) -> tuple[bool, str]:
     text = (result.stdout or "") + "\n" + (result.stderr or "")
+    if probe.get("expect_timed_out") is True:
+        return result.timed_out, "timed_out" if result.timed_out else "expected timeout"
     if probe.get("expect_nonzero") is True and result.exit_code == 0:
         return False, "expected non-zero exit code"
     if probe.get("expect_nonzero") is False and result.exit_code != 0:
