@@ -127,7 +127,7 @@ class BundleTest(unittest.TestCase):
         self._make()
         bundle = build_bundle(self.trace, anchor_path=self.anchor)
         result = verify_bundle_dict(bundle)
-        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(result["status"], "CONTENT_VERIFIED")
         self.assertTrue(result["content_ok"])
         self.assertIsNone(result["signature_ok"])
         self.assertFalse(result["fully_verified"])

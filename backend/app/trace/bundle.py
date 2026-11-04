@@ -290,7 +290,7 @@ def verify_bundle_dict(
 
     result.update(
         {
-            "status": "VERIFIED",
+            "status": "VERIFIED" if result["signature_ok"] is True else "CONTENT_VERIFIED",
             "ok": True,
             "content_ok": True,
             "final_hash": actual_final_hash,
