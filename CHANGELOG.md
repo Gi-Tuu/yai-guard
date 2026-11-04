@@ -16,15 +16,19 @@
   (content checked, no signature) instead of `VERIFIED`; `/trace/verify`,
   `/evidence` and `verify_bundle` agree. Signed verification still returns
   `VERIFIED`.
-- Tests: 213 (1 skipped by design); Docker layer 6/6; controller integration
-  20/20 consecutive runs.
+- Tests: 214 (1 skipped by design); Docker layer 6/6; controller integration
+  20/20 consecutive runs; true two-process multi-worker test added.
 - Fix commit: `89f80c5`; merged on main as `809ba3c`.
+- Deployed: app and sandbox controller both at `ecb34fa`; production `/healthz`
+  reports `0.1.1`, `runtime=runsc`, task store schema v4.
+- Tag: annotated `v0.1.1` at `ecb34fa`.
 
 ### Documentation
 
 - `docs/13-测试与证据报告.md` records the fix commit, local-reproduction gaps
   (gVisor, Vultr model, true multi-process, Caddy, chaos/load) and a fixed
   synthetic claim–evidence contrast set.
+- True two-process multi-worker test (`test_multi_worker_process.py`).
 - README status table clarifies `PENDING` covers `waiting_approval`, and adds
   the GitHub Issues entry.
 
