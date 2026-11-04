@@ -452,6 +452,16 @@ class TaskStore:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def expire_pending_approvals(self, *, now: float | None = None) -> int:
+        """On restart no in-memory waiter survives, so pending approvals are dead."""
+        resolved = time.time() if now is None else now
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE approvals SET status = ?, resolved_at = ? WHERE status = ?",
+                (ApprovalStatus.EXPIRED.value, resolved, ApprovalStatus.PENDING.value),
+            )
+            return cursor.rowcount
+
     # ------------------------------------------------------------------ stats
     def count_by_status(self) -> dict[str, int]:
         with self._lock:
