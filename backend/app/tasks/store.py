@@ -90,7 +90,9 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
 
 
 def _migration_v2(conn: sqlite3.Connection) -> None:
-    conn.execute("ALTER TABLE tasks ADD COLUMN updated_at REAL")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "updated_at" not in columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN updated_at REAL")
     conn.execute(
         "UPDATE tasks SET updated_at = COALESCE(finished_at, started_at, created_at)"
     )
@@ -124,15 +126,34 @@ class TaskStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(
-            str(self.path), check_same_thread=False, timeout=5.0,
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._migrate()
+        # Multiple uvicorn workers may construct TaskStore simultaneously on a
+        # fresh DB. Serialize migration across processes before opening a
+        # connection that could apply the same DDL twice.
+        migration_lock = None
+        try:
+            import fcntl
+            migration_lock = open(str(self.path) + ".migrate.lock", "a+",
+                                  encoding="utf-8")
+            fcntl.flock(migration_lock.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            migration_lock = None
+        try:
+            self._conn = sqlite3.connect(
+                str(self.path), check_same_thread=False, timeout=5.0,
+            )
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._migrate()
+        finally:
+            if migration_lock is not None:
+                try:
+                    import fcntl
+                    fcntl.flock(migration_lock.fileno(), fcntl.LOCK_UN)
+                finally:
+                    migration_lock.close()
 
     # ---------------------------------------------------------------- schema
     def _migrate(self) -> None:
