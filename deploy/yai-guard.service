@@ -20,7 +20,6 @@ ProtectHome=true
 ReadWritePaths=/opt/yai-guard/artifacts
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
-MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target
