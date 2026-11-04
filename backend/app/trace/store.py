@@ -88,7 +88,8 @@ def verify_trace_file(
     - 若配置了 hmac_key，anchor 必须带可验证 HMAC；
     - 终态任务必须有 confirmed（或旧版 destroyed）销毁事件；
     - 缺失 Anchor → INCOMPLETE（绝不返回 VERIFIED）。
-    运行中任务返回 PENDING。
+    queued/running/waiting_approval 返回 PENDING；无签名时终态内容校验返回
+    CONTENT_VERIFIED，配置并验证签名后才返回 VERIFIED。
     """
     p = Path(path)
     events, error = _read_events(p)
@@ -100,7 +101,7 @@ def verify_trace_file(
         "signature_alg": None, "ed25519_ok": None,
         "bad_seq": None, "final_hash": None, "strict": strict,
     }
-    if task_status in ("queued", "running"):
+    if task_status in ("queued", "running", "waiting_approval"):
         result["status"] = "PENDING"
         return result
     if error:
@@ -203,7 +204,11 @@ def verify_trace_file(
     else:
         result["status"] = "VERIFIED"
 
-    result["ok"] = result["status"] == "VERIFIED"
+    # VERIFIED means content plus a verified signature. Unsigned traces are
+    # content-consistent but must not claim signature provenance.
+    if result["status"] == "VERIFIED" and hmac_key is None and public_key is None:
+        result["status"] = "CONTENT_VERIFIED"
+    result["ok"] = result["status"] in ("VERIFIED", "CONTENT_VERIFIED")
     return result
 
 

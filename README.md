@@ -195,7 +195,7 @@ Status meanings:
 | `CONTENT_VERIFIED` | Content checks pass; signature was not verified (or only an embedded key self-check) |
 | `INCOMPLETE` | Required evidence (anchor, cleanup, sandbox or execution metadata) is missing |
 | `FAILED` | Hash chain, metadata, final hash, anchor or signature mismatch |
-| `PENDING` | Task is still running |
+| `PENDING` | Task is queued, running, or waiting for approval |
 
 The verifier does not trust bundle summary fields. It recomputes the hash
 chain, verifies that `container_id`, `image_id`, `runtime`, execution records,
@@ -203,6 +203,11 @@ cleanup state and final hash match the raw events, and checks the anchor
 signature when a key is supplied. `cancelled` and `interrupted` are valid
 terminal outcomes; an interrupted bundle records the interruption without
 fabricating a confirmed cleanup.
+
+`GET /api/tasks/{id}/trace/verify` and
+`GET /api/tasks/{id}/evidence` use these same statuses. Without an HMAC or
+pinned Ed25519 key, content verification is reported as `CONTENT_VERIFIED`,
+never `VERIFIED`.
 
 ## Containment Lab
 
@@ -218,6 +223,10 @@ fabricating a confirmed cleanup.
 
 The Lab reports per-probe exit codes and confirmed cleanup, without involving
 the policy engine or model.
+
+## Issues
+
+Bug reports and reproducible findings: <https://github.com/Gi-Tuu/yai-guard/issues>.
 
 ---
 

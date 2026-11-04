@@ -94,10 +94,14 @@ def _claims_check(events: list[dict[str, Any]]) -> bool | None:
         # New traces mark whether claims were required. Old traces stay
         # compatible (None), but a marked task with commands cannot pass.
         return False if claims_required else None
+    if not isinstance(claims, list):
+        return False
+    if not claims:
+        # Optional empty claims mean the claim-specific check does not apply.
+        # Required empty claims still fail.
+        return False if claims_required else None
     exec_events = {e.get("seq"): (e.get("exec") or {})
                    for e in events if e.get("event") == "sandbox.exec"}
-    if not isinstance(claims, list) or not claims:
-        return False
     binding = payload.get("claim_binding")
     for claim in claims:
         if not isinstance(claim, dict):

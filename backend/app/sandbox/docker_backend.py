@@ -305,24 +305,72 @@ class DockerSandbox:
         }
 
     def destroy(self, task_id: str) -> dict:
-        """删除容器并用 inspect 确认；只有确认不存在才返回 verified=True。"""
+        """删除容器并用 inspect 确认；只有确认不存在才返回 verified=True。
+
+        `docker rm -f` 与 `--rm`/删除进行中可能短暂竞争，因此做有限次短重试；
+        只要 inspect 仍能看到容器，就绝不返回 verified。
+        """
         name = f"yaig-{task_id}"
-        rm = subprocess.run([self.docker_bin, "rm", "-f", name],
-                            capture_output=True, text=True, timeout=30)
-        inspect = subprocess.run([self.docker_bin, "inspect", "--format", "{{.Id}}", name],
-                                 capture_output=True, text=True, timeout=20)
-        exists = inspect.returncode == 0
-        stderr = inspect.stderr.strip()
-        absent = (not exists) and ("no such" in stderr.lower() or "not found" in stderr.lower())
-        verified = absent and not exists
+        deadline = time.monotonic() + 2.0
+        attempts = 0
+        last_rm: subprocess.CompletedProcess | None = None
+        last_inspect: subprocess.CompletedProcess | None = None
+        absent = False
+        while True:
+            attempts += 1
+            try:
+                last_rm = subprocess.run(
+                    [self.docker_bin, "rm", "-f", name],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                last_rm = subprocess.CompletedProcess(
+                    args=[self.docker_bin, "rm", "-f", name],
+                    returncode=-1, stdout="", stderr=str(exc),
+                )
+            try:
+                last_inspect = subprocess.run(
+                    [self.docker_bin, "inspect", "--format", "{{.Id}}", name],
+                    capture_output=True, text=True, timeout=20,
+                )
+                inspect_ran = True
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                last_inspect = subprocess.CompletedProcess(
+                    args=[self.docker_bin, "inspect", name],
+                    returncode=-1, stdout="", stderr=str(exc),
+                )
+                inspect_ran = False
+            exists = last_inspect.returncode == 0
+            stderr = (last_inspect.stderr or "").strip()
+            absent = inspect_ran and (not exists) and (
+                "no such" in stderr.lower() or "not found" in stderr.lower()
+            )
+            if absent:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(min(0.1 * attempts, 0.5))
+
+        rm_exit = last_rm.returncode if last_rm is not None else -1
+        inspect_exit = last_inspect.returncode if last_inspect is not None else -1
+        stderr = (last_inspect.stderr or "").strip() if last_inspect is not None else ""
+        verified = absent and inspect_exit != 0
+        error = None
+        if not verified:
+            error = stderr[:400] or "container may still exist"
+            if rm_exit != 0 and last_rm is not None:
+                rm_err = (last_rm.stderr or "").strip()
+                if rm_err:
+                    error = f"{error}; rm: {rm_err[:200]}"
         return {
             "ok": verified,
             "verified": verified,
             "backend": "docker",
             "container": name,
-            "rm_exit": rm.returncode,
-            "inspect_exit": inspect.returncode,
-            "error": None if verified else (stderr[:400] or "container may still exist"),
+            "rm_exit": rm_exit,
+            "inspect_exit": inspect_exit,
+            "attempts": attempts,
+            "error": error,
         }
 
     # ------------------------------------------------------------------ files
