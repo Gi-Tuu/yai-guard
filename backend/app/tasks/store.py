@@ -294,6 +294,87 @@ class TaskStore:
                 return None
         return self.get_task(task_id)
 
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: float = 60.0,
+        now: float | None = None,
+    ) -> TaskRecord | None:
+        """Atomically claim the oldest queued task across processes."""
+        current = time.time() if now is None else now
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT id, version FROM tasks WHERE status = ? "
+                    "ORDER BY created_at LIMIT 1",
+                    (TaskStatus.QUEUED.value,),
+                ).fetchone()
+                if row is None:
+                    self._conn.commit()
+                    return None
+                cursor = self._conn.execute(
+                    "UPDATE tasks SET status = ?, worker_id = ?, lease_until = ?, "
+                    "started_at = COALESCE(started_at, ?), attempt = attempt + 1, "
+                    "updated_at = ?, version = version + 1 "
+                    "WHERE id = ? AND status = ? AND version = ?",
+                    (
+                        TaskStatus.RUNNING.value, worker_id,
+                        current + lease_seconds, current, current,
+                        row["id"], TaskStatus.QUEUED.value, row["version"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    return None
+                self._conn.commit()
+                return self._get_locked(row["id"])
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def count_queued(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks WHERE status = ?",
+                (TaskStatus.QUEUED.value,),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def recover_expired(self, *, now: float | None = None) -> list[str]:
+        """Recover tasks whose owner stopped heartbeating; active leases survive."""
+        current = time.time() if now is None else now
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM tasks WHERE status IN (?, ?) "
+                "AND lease_until IS NOT NULL AND lease_until < ?",
+                (TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value, current),
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            for task_id in ids:
+                self._conn.execute(
+                    "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
+                    "lease_until = NULL, worker_id = NULL, updated_at = ?, "
+                    "version = version + 1 WHERE id = ? AND status IN (?, ?)",
+                    (
+                        TaskStatus.INTERRUPTED.value, "lease_expired", current,
+                        current, task_id,
+                        TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
+                    ),
+                )
+            return ids
+
+    def expire_approvals_before(self, cutoff: float) -> int:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE approvals SET status = ?, resolved_at = ? "
+                "WHERE status = ? AND expires_at < ?",
+                (ApprovalStatus.EXPIRED.value, cutoff,
+                 ApprovalStatus.PENDING.value, cutoff),
+            )
+            return cursor.rowcount
+
     def heartbeat(
         self,
         task_id: str,

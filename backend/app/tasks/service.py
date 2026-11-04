@@ -15,12 +15,13 @@ from .store import TaskAlreadyExists, TaskStore
 
 
 class TaskService:
-    def __init__(self, store: TaskStore | None = None, *, error: str | None = None) -> None:
+    def __init__(self, store: TaskStore | None = None, *, error: str | None = None,
+                 recover: bool = True) -> None:
         self.store = store
         self.mode = "sqlite" if store is not None else "memory"
         self._error = error
         self._degraded = store is None and error is not None
-        if store is not None:
+        if store is not None and recover:
             try:
                 store.recover_interrupted()
                 store.expire_pending_approvals()
@@ -29,11 +30,12 @@ class TaskService:
                 self._error = f"recovery failed: {type(exc).__name__}: {exc}"
 
     @classmethod
-    def from_path(cls, path: str | Path | None) -> "TaskService":
+    def from_path(cls, path: str | Path | None, *,
+                  recover: bool = True) -> "TaskService":
         if path is None:
             return cls()
         try:
-            return cls(TaskStore(path))
+            return cls(TaskStore(path), recover=recover)
         except Exception as exc:  # noqa: BLE001 - fall back to memory + degraded health
             return cls(None, error=f"{type(exc).__name__}: {exc}")
 
@@ -186,6 +188,42 @@ class TaskService:
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return []
+
+    def recover_expired(self) -> list[str]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.recover_expired()
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return []
+
+    def claim_next(self, *, worker_id: str, lease_seconds: float = 60.0) -> TaskRecord | None:
+        if self.store is None:
+            return None
+        try:
+            return self.store.claim_next(worker_id=worker_id, lease_seconds=lease_seconds)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return None
+
+    def count_queued(self) -> int:
+        if self.store is None:
+            return 0
+        try:
+            return self.store.count_queued()
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return 0
+
+    def expire_approvals_before(self, cutoff: float) -> int:
+        if self.store is None:
+            return 0
+        try:
+            return self.store.expire_approvals_before(cutoff)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return 0
 
     # -------------------------------------------------------------- approvals
     def create_approval(self, *, task_id: str, call_id: str, owner: str,

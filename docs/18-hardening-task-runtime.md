@@ -6,6 +6,9 @@
 > 单写者说明（当前实现）：app 进程通过 `artifacts/task-runtime.lock` 的 `flock` 独占运行；任务认领使用
 > `mark_running` 的 CAS，而不是多进程 `claim_next`。文档后文关于 `claim_next`/多 worker 的部分是设计历史，
 > 当前代码已移除该未使用入口；多 worker 横向扩展仍未实现。
+>
+> Phase 2 更新：`TASK_RUNTIME_MODE=multi` 已新增 DB 队列、`claim_next`、每进程 worker、DB 事件表与
+> DB 审批路径；默认仍是 single 模式，生产切换前需单独验收。
 
 ## 0. 当前实现状态（2026-11-04）
 
