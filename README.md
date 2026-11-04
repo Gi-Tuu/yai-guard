@@ -204,6 +204,11 @@ signature when a key is supplied. `cancelled` and `interrupted` are valid
 terminal outcomes; an interrupted bundle records the interruption without
 fabricating a confirmed cleanup.
 
+`GET /api/tasks/{id}/trace/verify` and
+`GET /api/tasks/{id}/evidence` use these same statuses. Without an HMAC or
+pinned Ed25519 key, content verification is reported as `CONTENT_VERIFIED`,
+never `VERIFIED`.
+
 ## Containment Lab
 
 `POST /api/containment/run` executes five direct sandbox probes:
