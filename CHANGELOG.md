@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-04
+## 2026-11-04 — v0.1.1
 
 ### Fixed
 
@@ -17,7 +17,7 @@
   `/evidence` and `verify_bundle` agree. Signed verification still returns
   `VERIFIED`.
 - Tests: 213 (1 skipped by design); Docker layer 6/6; controller integration
-  5/5 consecutive runs.
+  20/20 consecutive runs.
 - Fix commit: `89f80c5`; merged on main as `809ba3c`.
 
 ### Documentation
@@ -28,4 +28,7 @@
 - README status table clarifies `PENDING` covers `waiting_approval`, and adds
   the GitHub Issues entry.
 
-No release tag was created by this change.
+### Release
+
+- Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+

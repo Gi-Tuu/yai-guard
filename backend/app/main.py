@@ -93,7 +93,7 @@ TRACE_ED25519_PUBLIC = (
     TRACE_ED25519_KEY.public_key() if TRACE_ED25519_KEY is not None else None
 )
 
-app = FastAPI(title="YAI Guard", version="0.1.0")
+app = FastAPI(title="YAI Guard", version="0.1.1")
 POLICY = PolicyEngine.from_file()
 _LOCK = threading.Lock()
 
@@ -970,7 +970,7 @@ def healthz() -> JSONResponse:
     ok = ok and bool(task_store.get("ok")) and _RUNTIME_LOCK_OK
     payload = {
         "ok": ok,
-        "version": "0.1.0",
+        "version": "0.1.1",
         "trace_ok": trace_ok,
         "trace_bad": trace_error,
         "sandbox": sandbox,
