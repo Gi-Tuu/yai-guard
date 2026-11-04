@@ -1,4 +1,4 @@
-"""独立验证器：python -m app.trace.verify_bundle <bundle.json> [--hmac-key KEY]"""
+"""独立验证器：python -m app.trace.verify_bundle <bundle.json> [--hmac-key KEY] [--require-signature]"""
 from __future__ import annotations
 
 import argparse
@@ -13,12 +13,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify a yai-guard-evidence/v1 bundle offline.")
     parser.add_argument("bundle", help="path to evidence bundle JSON")
     parser.add_argument("--hmac-key", default=None, help="optional anchor HMAC key")
+    parser.add_argument(
+        "--require-signature",
+        action="store_true",
+        help="fail unless the anchor signature is verified (status VERIFIED)",
+    )
     args = parser.parse_args(argv)
 
     data = json.loads(Path(args.bundle).read_text(encoding="utf-8"))
     result = verify_bundle_dict(data, hmac_key=args.hmac_key)
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return {"VERIFIED": 0, "FAILED": 1, "INCOMPLETE": 2}.get(result["status"], 3)
+    if args.require_signature and result["status"] != "VERIFIED":
+        return 1
+    return {"VERIFIED": 0, "CONTENT_VERIFIED": 0, "FAILED": 1, "INCOMPLETE": 2}.get(
+        result["status"], 3
+    )
 
 
 if __name__ == "__main__":
