@@ -100,6 +100,8 @@ surfaced as degraded health instead of breaking task creation.
 |---|---|
 | No host execution in the app process | Execution is only reachable through the sandbox controller |
 | No Docker socket in the app | Controller and daemon live on the sandbox host |
+| Sandbox runtime | Production uses gVisor `runsc` (ptrace platform); runc remains the fallback |
+| Pinned sandbox image | Controller runs the image by its `@sha256` digest, not only a mutable tag |
 | Deterministic policy | Rules return allow / deny / require-approval with a stable rule id |
 | Human approval | Approval is a strict JSON boolean; duplicates and cross-owner access are rejected |
 | Bounded execution | Per-stream and total output limits; timeout/output overflow kills the process group and container |
@@ -107,6 +109,7 @@ surfaced as degraded health instead of breaking task creation.
 | Tamper-evident audit | SHA-256 hash chain + anchor; strict verification refuses to report VERIFIED when evidence is missing |
 | Ed25519 evidence signatures | Anchor `signature_v2` with a pinned public key; v1 HMAC remains supported |
 | Durable task runtime | SQLite task state, bounded queue, cancellation, deadline, restart recovery and orphan reaper |
+| Multi-worker runtime | Optional DB queue + per-process claim workers; global SQLite rate/SSE quotas |
 | Offline evidence | A downloadable evidence bundle contains the trace and anchor; an independent CLI re-verifies it |
 
 ---
