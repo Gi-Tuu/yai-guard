@@ -2,6 +2,10 @@
 
 > 状态：WP1–WP6、WP9（queued 重启重排）与 interrupted 证据已实现；生产使用 `TASK_STORE=sqlite`。  
 > 目标：为取消、队列、审批、重启恢复、周期性孤儿回收和证据签名升级提供单一任务事实源。
+>
+> 单写者说明（当前实现）：app 进程通过 `artifacts/task-runtime.lock` 的 `flock` 独占运行；任务认领使用
+> `mark_running` 的 CAS，而不是多进程 `claim_next`。文档后文关于 `claim_next`/多 worker 的部分是设计历史，
+> 当前代码已移除该未使用入口；多 worker 横向扩展仍未实现。
 
 ## 0. 当前实现状态（2026-11-04）
 
