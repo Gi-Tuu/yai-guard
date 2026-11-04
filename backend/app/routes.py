@@ -134,11 +134,14 @@ def create_task(body: dict[str, Any], request: Request,
         if settings.TASK_SERVICE.count_queued() >= settings.TASK_QUEUE_MAX:
             raise HTTPException(status_code=429, detail="task queue is full",
                                 headers={"Retry-After": "10"})
-        with task_state._LOCK:
-            task_state.TASKS[task_id] = state
-        settings.TASK_SERVICE.create(
+        created = settings.TASK_SERVICE.create(
             task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
         )
+        if settings.TASK_SERVICE.enabled and created is None:
+            raise HTTPException(status_code=503,
+                                detail="task store unavailable; task was not queued")
+        with task_state._LOCK:
+            task_state.TASKS[task_id] = state
         return {"task_id": task_id, "trace_id": trace_id, "status": "queued"}
 
     # 有界队列：超过队列上限才拒绝；任务提交到 worker 池，状态先为 queued。
@@ -147,11 +150,15 @@ def create_task(body: dict[str, Any], request: Request,
                             detail="task queue is full",
                             headers={"Retry-After": "10"})
 
-    with task_state._LOCK:
-        task_state.TASKS[task_id] = state
-    settings.TASK_SERVICE.create(
+    created = settings.TASK_SERVICE.create(
         task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
     )
+    if settings.TASK_SERVICE.enabled and created is None:
+        task_state._release_queue_slot()
+        raise HTTPException(status_code=503,
+                            detail="task store unavailable; task was not queued")
+    with task_state._LOCK:
+        task_state.TASKS[task_id] = state
     with task_state._DISPATCH_LOCK:
         task_state._DISPATCHED_QUEUED.add(task_id)
     try:
@@ -217,7 +224,13 @@ def stream_events(task_id: str,
                     if batch:
                         cursor = max(int(event.get("seq", 0)) for event in batch)
                     record = settings.TASK_SERVICE.get_record(task_id)
-                    finished = bool(record and record.terminal)
+                    if record is None:
+                        # The task row was pruned (or the store is gone). Do
+                        # not spin forever on an SSE connection that can never
+                        # observe another terminal transition.
+                        yield "event: done\ndata: {}\n\n"
+                        return
+                    finished = record.terminal
                 else:
                     with task_state._LOCK:
                         batch = state.events[cursor:]

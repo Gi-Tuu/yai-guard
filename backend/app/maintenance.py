@@ -185,7 +185,8 @@ def _record_interrupted_events() -> list[str]:
                 continue
             trace.append(
                 task_id=record.id, actor="system", event="task.interrupted",
-                payload={"reason": "app_restart", "recovered_from": "durable_task_store"},
+                payload={"reason": record.error or "app_restart",
+                         "recovered_from": "durable_task_store"},
             )
             trace.seal(
                 settings.TRACES / f"{record.trace_id}.anchor.json",

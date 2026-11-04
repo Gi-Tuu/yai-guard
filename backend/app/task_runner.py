@@ -88,7 +88,9 @@ def _wait_approval_db(state: TaskState, call: ToolCall,
     finally:
         task_state._acquire_exec_slot()
     state.status = "running"
-    settings.TASK_SERVICE.mark_resumed(state.task_id)
+    settings.TASK_SERVICE.mark_resumed(
+        state.task_id, lease_seconds=settings.TASK_LEASE_SECONDS,
+    )
     return approved, decided, cancelled, observed
 
 
@@ -120,7 +122,9 @@ def _wait_approval_memory(state: TaskState, call: ToolCall, decision: Decision,
     finally:
         task_state._acquire_exec_slot()
     state.status = "running"
-    settings.TASK_SERVICE.mark_resumed(state.task_id)
+    settings.TASK_SERVICE.mark_resumed(
+        state.task_id, lease_seconds=settings.TASK_LEASE_SECONDS,
+    )
     with task_state._LOCK:
         record = task_state.PENDING.pop(key, {"approved": False})
     return record.get("approved") is True, decided, cancelled
@@ -195,6 +199,7 @@ def _prepare_run(state: TaskState, *, already_claimed: bool,
             return None
         started = settings.TASK_SERVICE.mark_running(
             state.task_id, worker_id=state.worker_id,
+            lease_seconds=settings.TASK_LEASE_SECONDS,
         )
         if started is None:
             with task_state._DISPATCH_LOCK:
@@ -334,4 +339,6 @@ def run_task(state: TaskState, *, already_claimed: bool = False,
         _record_run_failure(ctx, exc)
     finally:
         _finalize_run(ctx)
+
+
 

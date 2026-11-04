@@ -28,6 +28,12 @@ def _load_events(path: str | Path) -> list[dict[str, Any]]:
 
 def _infer_status(events: list[dict[str, Any]]) -> str:
     kinds = [e.get("event") for e in events]
+    # A completion whose cleanup was not verified is a failed task: the
+    # execution finished, but the sandbox lifecycle did not. This matches the
+    # runner (cleanup_unverified -> failed) and avoids a bundle claiming
+    # completed for a task the API reports as failed.
+    if "task.completed" in kinds and "sandbox.destroy.unverified" in kinds:
+        return "failed"
     if "task.completed" in kinds:
         return "completed"
     if "task.failed" in kinds:
@@ -253,9 +259,15 @@ def verify_bundle_dict(
                       if k in kinds]
     if len(terminal_kinds) > 1:
         return _fail(result, "FAILED", "ambiguous_terminal_events")
+    last = kinds[-1] if kinds else None
     if inferred_status in ("completed", "failed", "cancelled", "interrupted"):
         expected_terminal = "task." + inferred_status
-        if expected_terminal not in kinds:
+        cleanup_failed_completion = (
+            inferred_status == "failed"
+            and "task.completed" in kinds
+            and last == "sandbox.destroy.unverified"
+        )
+        if expected_terminal not in kinds and not cleanup_failed_completion:
             return _fail(result, "INCOMPLETE", "missing_terminal_event")
     last = kinds[-1] if kinds else None
     if inferred_status == "running":

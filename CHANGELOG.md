@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-11-05 — v0.1.2 audit remediation
+
+- Task creation now fails with HTTP 503 instead of returning a fake `queued`
+  task when the durable store rejects the write.
+- Cleanup-unverified completions are treated as failed evidence: bundle status
+  is `failed`, verification is `INCOMPLETE`, and `/trace/verify` completeness
+  no longer rejects the completed event that preceded the failed cleanup.
+- Trace writers are fenced with a file lock plus stale seq/hash detection; a
+  recovery writer and a paused owner can no longer interleave two writers into
+  one trace.
+- Controller `/healthz` re-checks Docker/runtime/image on every probe instead of
+  returning a boot-time snapshot.
+- `TaskService` clears a sticky degraded flag after a successful store probe.
+- Global rate limiting falls back to the in-process limiter when the SQLite
+  quota call fails, and expired `rate_hits` rows are removed globally.
+- Controller orphan reaping only reports verified removals; its put-file body
+  is bounded.
+- Task transitions now pass CAS `expected_version` on waiting/resume/finish;
+  lease values use `TASK_LEASE_SECONDS` on claim and resume.
+- Backup snapshots now reject DB/trace changes during the copy window; restore
+  removes stale traces when the archive has none. `--allow-active` keeps the
+  old permissive behavior for an intentional online snapshot.
+- SSE terminates instead of spinning when the task row has been pruned.
+- Interrupted evidence preserves `lease_expired` instead of relabeling every
+  interruption as `app_restart`.
+- Tests: 229 (1 skipped); Docker 6/6; controller integration 5/5.
+
 ## 2026-11-05 — internal split (no behavior change)
 
 - Split the 1270-line `backend/app/main.py` into `settings.py`, `security.py`,

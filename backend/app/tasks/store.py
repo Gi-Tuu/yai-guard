@@ -389,19 +389,21 @@ class TaskStore:
                 "AND lease_until IS NOT NULL AND lease_until < ?",
                 (TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value, current),
             ).fetchall()
-            ids = [row["id"] for row in rows]
-            for task_id in ids:
-                self._conn.execute(
+            recovered: list[str] = []
+            for row in rows:
+                cursor = self._conn.execute(
                     "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
                     "lease_until = NULL, worker_id = NULL, updated_at = ?, "
                     "version = version + 1 WHERE id = ? AND status IN (?, ?)",
                     (
                         TaskStatus.INTERRUPTED.value, "lease_expired", current,
-                        current, task_id,
+                        current, row["id"],
                         TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
                     ),
                 )
-            return ids
+                if cursor.rowcount == 1:
+                    recovered.append(row["id"])
+            return recovered
 
     def expire_approvals_before(self, cutoff: float) -> int:
         with self._lock, self._conn:
@@ -528,19 +530,21 @@ class TaskStore:
                 "SELECT id FROM tasks WHERE status IN (?, ?)",
                 (TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value),
             ).fetchall()
-            ids = [row["id"] for row in rows]
-            for task_id in ids:
-                self._conn.execute(
+            recovered: list[str] = []
+            for row in rows:
+                cursor = self._conn.execute(
                     "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
                     "lease_until = NULL, worker_id = NULL, updated_at = ?, "
                     "version = version + 1 "
                     "WHERE id = ? AND status IN (?, ?)",
                     (
-                        TaskStatus.INTERRUPTED.value, reason, finished, finished, task_id,
+                        TaskStatus.INTERRUPTED.value, reason, finished, finished, row["id"],
                         TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
                     ),
                 )
-        return ids
+                if cursor.rowcount == 1:
+                    recovered.append(row["id"])
+            return recovered
 
     def request_cancel(self, task_id: str, *, now: float | None = None) -> bool:
         with self._lock, self._conn:
@@ -681,9 +685,11 @@ class TaskStore:
         """Return 0 when allowed, otherwise Retry-After seconds."""
         current = time.time() if now is None else now
         with self._lock, self._conn:
+            # Drop expired rows for every key, not only the current client:
+            # one-off IPs would otherwise accumulate forever in this table.
             self._conn.execute(
-                "DELETE FROM rate_hits WHERE key = ? AND ts < ?",
-                (key, current - window_s),
+                "DELETE FROM rate_hits WHERE ts < ?",
+                (current - window_s,),
             )
             rows = self._conn.execute(
                 "SELECT ts FROM rate_hits WHERE key = ? ORDER BY ts",
