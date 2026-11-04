@@ -72,8 +72,17 @@ runtime:
   `task.interrupted` trace event (no re-execution);
 - `queued` tasks are re-dispatched after restart, with a periodic retry and no
   duplicate dispatch; already-cancelled queued tasks become `cancelled`;
-- a SQLite-aware orphan reaper removes containers only for terminal, queued, unknown
-  or lease-expired tasks, never for a healthy active lease.
+- startup recovery reconciles a trace that already reached a terminal state and
+  repairs the DB instead of appending a second terminal event;
+- a SQLite-aware orphan reaper removes containers only for terminal, queued or unknown
+  tasks; it never kills an active task, and startup recovery remains the authority for
+  interrupted work;
+- one process owns the durable runtime via an advisory `flock`; a second app
+  process fails closed (`runtime_lock` in `/healthz`) rather than double-executing;
+- terminal state is retained for `TASK_RETENTION_DAYS` (default 30, `0` disables);
+  scheduled cleanup removes DB rows, approvals, traces and anchors;
+- schema migrations are ordered and versioned (`PRAGMA user_version`); v2 adds
+  `updated_at`, applied to existing v1 databases on startup.
 
 Approval and task transitions are written through `TaskService`; a SQLite failure is
 surfaced as degraded health instead of breaking task creation.
