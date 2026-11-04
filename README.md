@@ -141,7 +141,7 @@ when a key is supplied.
 
 ## Containment Lab
 
-`POST /api/containment/run` executes four direct sandbox probes:
+`POST /api/containment/run` executes five direct sandbox probes:
 
 | Probe | Expected result |
 |---|---|
@@ -149,6 +149,7 @@ when a key is supplied.
 | `network_none` | outbound connection is unreachable |
 | `no_docker_socket` | `/var/run/docker.sock` is absent |
 | `no_secrets` | no inference, sandbox or demo token in the container env |
+| `wall_clock` | a runaway process is killed at the wall-clock cap |
 
 The Lab reports per-probe exit codes and confirmed cleanup, without involving
 the policy engine or model.

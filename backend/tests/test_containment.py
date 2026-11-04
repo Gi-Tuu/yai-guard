@@ -35,6 +35,9 @@ class ProbeSandbox(FakeSandbox):
             return ExecResult(stdout="SOCKET=False\n", exit_code=0)
         if command.strip() == "env":
             return ExecResult(stdout="PATH=/usr/local/bin\nHOME=/tmp\n", exit_code=0)
+        if "time.sleep" in command:
+            return ExecResult(stderr="killed", exit_code=124, timed_out=True,
+                              killed_reason="wall_clock")
         return ExecResult(stdout="", exit_code=0)
 
 
@@ -43,7 +46,7 @@ class ContainmentTest(unittest.TestCase):
         sandbox = ProbeSandbox()
         result = run_containment(sandbox, "ct_test")
         self.assertTrue(result["ok"], result)
-        self.assertEqual(result["summary"], "4/4 contained")
+        self.assertEqual(result["summary"], "5/5 contained")
         self.assertTrue(result["cleanup"]["verified"])
         self.assertTrue(sandbox.destroyed)
 
