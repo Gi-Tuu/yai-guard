@@ -18,6 +18,7 @@
   `VERIFIED`.
 - Tests: 213 (1 skipped by design); Docker layer 6/6; controller integration
   5/5 consecutive runs.
+- Fix commit: `89f80c5`; merged on main as `809ba3c`.
 
 ### Documentation
 
