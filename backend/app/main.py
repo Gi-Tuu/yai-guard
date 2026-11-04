@@ -66,6 +66,24 @@ TASK_SERVICE = (
     else TaskService()
 )
 
+
+def _load_trace_signing_key():
+    path = os.environ.get("TRACE_ED25519_PRIVATE_KEY_FILE")
+    if not path:
+        return None
+    try:
+        from app.trace.signing import load_private_key
+
+        return load_private_key(path)
+    except Exception:  # noqa: BLE001 - unsigned mode remains available
+        return None
+
+
+TRACE_ED25519_KEY = _load_trace_signing_key()
+TRACE_ED25519_PUBLIC = (
+    TRACE_ED25519_KEY.public_key() if TRACE_ED25519_KEY is not None else None
+)
+
 app = FastAPI(title="YAI Guard", version="0.1.0")
 POLICY = PolicyEngine.from_file()
 _LOCK = threading.Lock()
@@ -407,7 +425,8 @@ def _run_task(state: TaskState) -> None:
         if trace is not None:
             try:
                 trace.seal(TRACES / f"{state.trace_id}.anchor.json",
-                           hmac_key=os.environ.get("TRACE_HMAC_KEY") or None)
+                           hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
+                           ed25519_private_key=TRACE_ED25519_KEY)
             except Exception as exc:  # noqa: BLE001 - surface in state, do not crash
                 final_status = "failed"
                 final_error = final_error or f"anchor_seal_failed: {type(exc).__name__}: {exc}"
@@ -537,6 +556,10 @@ def healthz() -> JSONResponse:
             "waiting_threads": TASK_WAITING_THREADS,
             "queue_max": TASK_QUEUE_MAX,
             "queued": _QUEUED,
+        },
+        "signing": {
+            "alg": "ed25519" if TRACE_ED25519_PUBLIC is not None else None,
+            "configured": TRACE_ED25519_PUBLIC is not None,
         },
     }
     return JSONResponse(payload, status_code=200 if ok else 503)
@@ -681,7 +704,8 @@ def verify_trace(task_id: str, principal: str = Depends(_require_principal)) -> 
         task_status=state.status,
         anchor_path=TRACES / f"{state.trace_id}.anchor.json",
         hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
-        strict=state.status in ("completed", "failed"),
+        public_key=TRACE_ED25519_PUBLIC,
+        strict=state.status in ("completed", "failed", "cancelled"),
     )
     return result
 

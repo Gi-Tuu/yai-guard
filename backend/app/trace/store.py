@@ -77,6 +77,7 @@ def verify_trace_file(
     task_status: str | None = None,
     anchor_path: str | Path | None = None,
     hmac_key: str | None = None,
+    public_key: Any | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
     """结构化校验：区分 chain / sequence / completeness / cleanup / anchor / HMAC。
@@ -95,6 +96,7 @@ def verify_trace_file(
         "ok": False, "status": "UNVERIFIABLE", "reason": error, "events": len(events),
         "chain_ok": False, "sequence_ok": False, "completeness_ok": None,
         "cleanup_ok": None, "anchor_ok": None, "authentic": None,
+        "signature_alg": None, "ed25519_ok": None,
         "bad_seq": None, "final_hash": None, "strict": strict,
     }
     if task_status in ("queued", "running"):
@@ -162,6 +164,14 @@ def verify_trace_file(
                         result["reason"] = "hmac_mismatch"
             else:
                 result["authentic"] = None
+            if public_key is not None:
+                from .signing import verify_anchor_signature
+
+                result["signature_alg"] = "ed25519"
+                result["ed25519_ok"] = verify_anchor_signature(anchor, public_key)
+                if not result["ed25519_ok"]:
+                    result["authentic"] = False
+                    result["reason"] = result["reason"] or "ed25519_mismatch"
 
     if not result["chain_ok"] or not result["sequence_ok"]:
         result["status"] = "FAILED"
@@ -175,6 +185,8 @@ def verify_trace_file(
         elif result["cleanup_ok"] is not True:
             result["status"] = "INCOMPLETE"
         elif hmac_key and result["authentic"] is not True:
+            result["status"] = "FAILED"
+        elif public_key is not None and result["ed25519_ok"] is not True:
             result["status"] = "FAILED"
         else:
             result["status"] = "VERIFIED"
@@ -282,8 +294,9 @@ class TraceStore:
         return self.path.read_text(encoding="utf-8")
 
     # ------------------------------------------------------------------ anchor
-    def seal(self, anchor_path: str | Path, *, hmac_key: str | None = None) -> dict[str, Any]:
-        """写锚点：事件数量 + 最终哈希（+ 可选 HMAC）。
+    def seal(self, anchor_path: str | Path, *, hmac_key: str | None = None,
+             ed25519_private_key: Any | None = None) -> dict[str, Any]:
+        """写锚点：事件数量 + 最终哈希（+ 可选 HMAC / Ed25519）。
 
         锚点与 trace 分开存放，用于检测“末尾被截断/删除”这类链本身仍然自洽的篡改。
         HMAC 只有在密钥不被攻击者拿到时才有意义——这是信任边界，不是绝对保证。
@@ -296,6 +309,10 @@ class TraceStore:
             "final_hash": events[-1]["hash"] if events else GENESIS,
             "sealed_at": utc_now_iso(),
         }
+        if ed25519_private_key is not None:
+            from .signing import sign_anchor
+
+            payload["signature_v2"] = sign_anchor(payload, ed25519_private_key)
         if hmac_key:
             payload["hmac"] = hmac.new(
                 hmac_key.encode("utf-8"),

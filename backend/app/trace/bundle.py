@@ -189,7 +189,8 @@ def _fail(
 
 
 def verify_bundle_dict(
-    bundle: dict[str, Any], *, hmac_key: str | None = None
+    bundle: dict[str, Any], *, hmac_key: str | None = None,
+    public_key: Any | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "schema": bundle.get("schema"),
@@ -197,6 +198,8 @@ def verify_bundle_dict(
         "ok": False,
         "content_ok": False,
         "signature_ok": None,
+        "signature_alg": None,
+        "ed25519_ok": None,
         "fully_verified": False,
         "verification_level": "none",
         "reason": None,
@@ -387,6 +390,31 @@ def verify_bundle_dict(
     else:
         result["signature_ok"] = None
         result["verification_level"] = "content_only"
+
+    signature_v2 = anchor.get("signature_v2")
+    if public_key is not None:
+        from .signing import verify_anchor_signature
+
+        result["signature_alg"] = "ed25519"
+        if not signature_v2:
+            return _fail(result, "FAILED", "ed25519_missing",
+                         signature_ok=False, content_ok=True)
+        result["ed25519_ok"] = verify_anchor_signature(anchor, public_key)
+        if not result["ed25519_ok"]:
+            return _fail(result, "FAILED", "ed25519_mismatch",
+                         signature_ok=False, content_ok=True)
+        result["signature_ok"] = True
+        result["fully_verified"] = True
+        result["verification_level"] = "signed"
+    elif signature_v2:
+        from .signing import verify_anchor_signature
+
+        result["signature_alg"] = "ed25519"
+        result["ed25519_ok"] = verify_anchor_signature(anchor)
+        # Embedded key proves self-consistency, not an out-of-band identity.
+        result["verification_level"] = (
+            "signed" if result["signature_ok"] is True else "content_only"
+        )
 
     result.update(
         {
