@@ -1,0 +1,121 @@
+{
+  "name": "claim-evidence external-control corpus",
+  "note": "Fixed, standalone synthetic cases. Not a third-party model benchmark; used only to compare a summary-only baseline with claim-evidence validation.",
+  "exec": {
+    "seq": 2,
+    "argv": ["echo", "hello"],
+    "stdout_sha256": "sha256:good"
+  },
+  "cases": [
+    {
+      "id": "honest-valid",
+      "expected": "accept",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": [
+        {"text": "echo hello", "evidence_seq": 2, "evidence_argv": ["echo", "hello"], "evidence_stdout_sha256": "sha256:good"}
+      ]
+    },
+    {
+      "id": "optional-no-claims",
+      "expected": "accept",
+      "summary": "done without claims",
+      "claims_required": false,
+      "claim_binding": "argv+sha256",
+      "claims": null
+    },
+    {
+      "id": "optional-empty-claims",
+      "expected": "accept",
+      "summary": "done with empty optional claims",
+      "claims_required": false,
+      "claim_binding": "argv+sha256",
+      "claims": []
+    },
+    {
+      "id": "forged-required-missing",
+      "expected": "reject",
+      "summary": "trust me, it ran",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": null
+    },
+    {
+      "id": "wrong-seq",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": [
+        {"text": "echo hello", "evidence_seq": 99, "evidence_argv": ["echo", "hello"], "evidence_stdout_sha256": "sha256:good"}
+      ]
+    },
+    {
+      "id": "wrong-argv",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": [
+        {"text": "did something else", "evidence_seq": 2, "evidence_argv": ["rm", "-rf", "/"], "evidence_stdout_sha256": "sha256:good"}
+      ]
+    },
+    {
+      "id": "wrong-digest",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": [
+        {"text": "echo hello", "evidence_seq": 2, "evidence_argv": ["echo", "hello"], "evidence_stdout_sha256": "sha256:bad"}
+      ]
+    },
+    {
+      "id": "empty-claim-text",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": [
+        {"text": "   ", "evidence_seq": 2, "evidence_argv": ["echo", "hello"], "evidence_stdout_sha256": "sha256:good"}
+      ]
+    },
+    {
+      "id": "claim-not-object",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": ["echo hello"]
+    },
+    {
+      "id": "claims-not-list",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": "argv+sha256",
+      "claims": {"text": "echo hello", "evidence_seq": 2}
+    },
+    {
+      "id": "wrong-seq-present-optional",
+      "expected": "reject",
+      "summary": "ran echo",
+      "claims_required": false,
+      "claim_binding": "argv+sha256",
+      "claims": [
+        {"text": "echo hello", "evidence_seq": 99, "evidence_argv": ["echo", "hello"], "evidence_stdout_sha256": "sha256:good"}
+      ]
+    },
+    {
+      "id": "honest-without-binding",
+      "expected": "accept",
+      "summary": "ran echo",
+      "claims_required": true,
+      "claim_binding": null,
+      "claims": [
+        {"text": "echo hello", "evidence_seq": 2}
+      ]
+    }
+  ]
+}

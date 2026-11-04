@@ -16,13 +16,18 @@
   (content checked, no signature) instead of `VERIFIED`; `/trace/verify`,
   `/evidence` and `verify_bundle` agree. Signed verification still returns
   `VERIFIED`.
-- Tests: 214 (1 skipped by design); Docker layer 6/6; controller integration
-  20/20 consecutive runs; true two-process multi-worker test added.
+- Tests: 216 (1 skipped by design); Docker layer 6/6; controller integration
+  20/20 consecutive runs; true two-process multi-worker and worker-kill recovery
+  tests added.
 - CI: added a Linux `gvisor runsc integration` job; containment assertions are
   runtime-aware for runsc (pids-limit termination and `socket.if_nameindex`).
 - Online evidence: `scripts/online_smoke.py` (Caddy TLS, 20-task short soak,
   SSE) and a v0.1.1 worker-kill chaos drill (interrupted/lease_expired, trace
   VERIFIED, container cleaned).
+- External-control corpus: `benchmarks/claim_evidence_cases.json` and
+  `scripts/claim_evidence_benchmark.py`; 8 rejection cases, claim-evidence
+  recall 1.0, summary-only recall 0.0. This is a fixed control corpus, not a
+  third-party model benchmark.
 - Fix commit: `89f80c5`; merged on main as `809ba3c`.
 - Deployed: app and sandbox controller both at `ecb34fa`; production `/healthz`
   reports `0.1.1`, `runtime=runsc`, task store schema v4.
