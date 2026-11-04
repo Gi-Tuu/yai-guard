@@ -230,6 +230,33 @@ class TaskService:
             return []
 
     # ---------------------------------------------------------------- reads
+    def append_event(self, task_id: str, event: dict[str, Any]) -> None:
+        if self.store is None:
+            return
+        try:
+            self.store.append_event(task_id, event)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+
+    def list_events(self, task_id: str, *, after_seq: int = 0,
+                    limit: int = 500) -> list[dict[str, Any]]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.list_events(task_id, after_seq=after_seq, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return []
+
+    def count_events(self, task_id: str) -> int:
+        if self.store is None:
+            return 0
+        try:
+            return self.store.count_events(task_id)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return 0
+
     def queued_tasks(self) -> list[TaskRecord]:
         if self.store is None:
             return []
