@@ -26,6 +26,8 @@
 - Interrupted evidence preserves `lease_expired` instead of relabeling every
   interruption as `app_restart`.
 - Tests: 229 (1 skipped); Docker 6/6; controller integration 5/5.
+- Released: annotated tag `v0.1.2` at `a479fec`; app and sandbox controller
+  deployed at `a479fec`; `/healthz` reports `0.1.2`; SQLite schema v4.
 
 ## 2026-11-05 — internal split (no behavior change)
 
