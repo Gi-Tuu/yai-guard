@@ -12,8 +12,6 @@ from app import main as api  # noqa: E402
 
 class TaskRunnerTest(unittest.TestCase):
     def test_trace_store_init_failure_releases_slot(self) -> None:
-        acquired = api._TASK_SLOT.acquire(blocking=False)
-        self.assertTrue(acquired)
         state = api.TaskState(task_id="tk_broken", trace_id="tr_broken", task="ls")
         old = api.TraceStore
         try:
@@ -24,11 +22,11 @@ class TaskRunnerTest(unittest.TestCase):
             api._run_task(state)
         finally:
             api.TraceStore = old  # type: ignore[assignment]
-            free = api._TASK_SLOT.acquire(blocking=False)
+            free = api._EXEC_SLOTS.acquire(blocking=False)
             if free:
-                api._TASK_SLOT.release()
+                api._EXEC_SLOTS.release()
 
-        self.assertTrue(free, "slot leaked after TraceStore init failure")
+        self.assertTrue(free, "execution slot leaked after TraceStore init failure")
         self.assertEqual(state.status, "failed")
         self.assertIn("artifacts directory", state.error or "")
 

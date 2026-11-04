@@ -43,6 +43,17 @@ class TaskServiceTest(unittest.TestCase):
         self.assertEqual(service.get_record("tk").status, TaskStatus.COMPLETED)
         service.close()
 
+    def test_waiting_approval_transitions(self) -> None:
+        service = TaskService.from_path(self.path)
+        service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+        service.mark_running("tk")
+        self.assertIsNotNone(service.mark_waiting("tk"))
+        self.assertEqual(service.get_record("tk").status, TaskStatus.WAITING_APPROVAL)
+        self.assertIsNotNone(service.mark_resumed("tk"))
+        self.assertEqual(service.get_record("tk").status, TaskStatus.RUNNING)
+        service.finish("tk", TaskStatus.COMPLETED)
+        service.close()
+
     def test_restart_recovers_active_tasks(self) -> None:
         first = TaskService.from_path(self.path)
         first.create(task_id="running", trace_id="tr1", owner="u", prompt="x")
@@ -66,6 +77,29 @@ class TaskServiceTest(unittest.TestCase):
 
     def test_close_memory_is_safe(self) -> None:
         TaskService().close()
+
+    def test_approval_lifecycle_is_persisted(self) -> None:
+        service = TaskService.from_path(self.path)
+        service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+        self.assertTrue(service.create_approval(
+            task_id="tk", call_id="call_1", owner="u", ttl_s=60,
+        ))
+        pending = service.pending_approvals("tk")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["call_id"], "call_1")
+        self.assertTrue(service.resolve_approval("tk", "call_1", "approved"))
+        self.assertEqual(service.get_approval("tk", "call_1")["status"], "approved")
+        self.assertFalse(service.resolve_approval("tk", "call_1", "rejected"))
+        self.assertEqual(service.pending_approvals("tk"), [])
+        service.close()
+
+    def test_memory_approval_is_noop(self) -> None:
+        service = TaskService()
+        self.assertFalse(service.create_approval(
+            task_id="tk", call_id="call_1", owner="u", ttl_s=60,
+        ))
+        self.assertFalse(service.resolve_approval("tk", "call_1", "approved"))
+        self.assertIsNone(service.get_approval("tk", "call_1"))
 
 
 if __name__ == "__main__":

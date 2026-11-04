@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import TaskRecord, TaskStatus
+from .models import ApprovalStatus, TaskRecord, TaskStatus
 from .store import TaskAlreadyExists, TaskStore
 
 
@@ -86,6 +86,33 @@ class TaskService:
             self._mark_degraded(exc)
             return None
 
+    def mark_waiting(self, task_id: str) -> TaskRecord | None:
+        if self.store is None:
+            return None
+        try:
+            record = self.store.get_task(task_id)
+            if record is None or record.status is not TaskStatus.RUNNING:
+                return record
+            return self.store.transition(task_id, TaskStatus.WAITING_APPROVAL)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return None
+
+    def mark_resumed(self, task_id: str) -> TaskRecord | None:
+        if self.store is None:
+            return None
+        try:
+            record = self.store.get_task(task_id)
+            if record is None or record.status is not TaskStatus.WAITING_APPROVAL:
+                return record
+            return self.store.transition(
+                task_id, TaskStatus.RUNNING,
+                lease_until=time.time() + 60.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return None
+
     def finish(self, task_id: str, status: TaskStatus | str, *,
                summary: str = "", error: str | None = None) -> TaskRecord | None:
         if self.store is None:
@@ -103,6 +130,39 @@ class TaskService:
             return self.store.finish(
                 task_id, destination, summary=summary, error=error,
             )
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return None
+
+    # -------------------------------------------------------------- approvals
+    def create_approval(self, *, task_id: str, call_id: str, owner: str,
+                        ttl_s: float) -> bool:
+        if self.store is None:
+            return False
+        try:
+            self.store.create_approval(
+                task_id=task_id, call_id=call_id, owner=owner, ttl_s=ttl_s,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return False
+
+    def resolve_approval(self, task_id: str, call_id: str,
+                         status: ApprovalStatus | str) -> bool:
+        if self.store is None:
+            return False
+        try:
+            return self.store.resolve_approval(task_id, call_id, status=status)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return False
+
+    def get_approval(self, task_id: str, call_id: str) -> dict[str, Any] | None:
+        if self.store is None:
+            return None
+        try:
+            return self.store.get_approval(task_id, call_id)
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return None
