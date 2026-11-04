@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-05 — internal split (no behavior change)
+
+- Split the 1270-line `backend/app/main.py` into `settings.py`, `security.py`,
+  `task_state.py`, `task_runner.py`, `maintenance.py`, `routes.py`, and a thin
+  app assembly entrypoint.
+- `main.py` is now 22 lines; new module sizes: settings 107, security 114,
+  task_state 121, task_runner 337, maintenance 340, routes 374.
+- `run_task` is a 8-line orchestrator over prepare/start/trace/execute/failure/
+  finalize steps.
+- Route paths, API/status strings, DB schema, health payload, trace/evidence
+  verification and security semantics are unchanged. Route-table comparison
+  before/after is empty.
+- Tests: 216 (1 skipped); Docker 6/6; controller integration 5/5.
+
 ## 2026-11-04 — v0.1.1
 
 ### Fixed
