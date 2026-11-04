@@ -81,6 +81,7 @@ class TaskState:
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     events: list[dict] = field(default_factory=list)
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 TASKS: dict[str, TaskState] = {}
@@ -301,8 +302,19 @@ def _approver(state: TaskState):
 
         # 审批等待不占用执行槽：把槽让给其它任务，决定后再抢回。
         _release_exec_slot()
+        deadline = time.monotonic() + POLICY.approval_ttl
+        decided = False
+        cancelled = False
         try:
-            decided = gate.wait(timeout=POLICY.approval_ttl)
+            while True:
+                if gate.wait(timeout=0.2):
+                    decided = True
+                    break
+                if state.cancel_event.is_set():
+                    cancelled = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
         finally:
             _acquire_exec_slot()
 
@@ -311,7 +323,9 @@ def _approver(state: TaskState):
         with _LOCK:
             record = PENDING.pop(key, {"approved": False})
         approved = record.get("approved") is True
-        if not decided:
+        if cancelled:
+            status = ApprovalStatus.CANCELLED
+        elif not decided:
             status = ApprovalStatus.EXPIRED
         else:
             status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
@@ -353,6 +367,7 @@ def _run_task(state: TaskState) -> None:
             approver=_approver(state),
             emit=state.events.append,
             require_claims=os.environ.get("MOCK_MODEL", "0") != "1",
+            should_cancel=state.cancel_event.is_set,
         )
         final_status = result.status
         final_summary = result.summary
@@ -509,6 +524,18 @@ def create_task(body: dict[str, Any], request: Request,
     return {"task_id": task_id, "trace_id": trace_id, "status": state.status}
 
 
+@app.post("/api/tasks/{task_id}/cancel")
+def cancel_task(task_id: str,
+                principal: str = Depends(_require_principal)) -> dict[str, Any]:
+    """协作取消：设置标志、唤醒审批等待，由 worker 在边界写入 cancelled。"""
+    state = _owned_task(task_id, principal)
+    if state.status in ("completed", "failed", "cancelled"):
+        raise HTTPException(status_code=409, detail="task is already terminal")
+    state.cancel_event.set()
+    TASK_SERVICE.request_cancel(task_id)
+    return {"ok": True, "status": "cancelling"}
+
+
 @app.get("/api/tasks/{task_id}")
 def get_task(task_id: str, principal: str = Depends(_require_principal)) -> dict[str, Any]:
     state = _owned_task(task_id, principal)
@@ -536,7 +563,7 @@ def stream_events(task_id: str, principal: str = Depends(_require_principal)) ->
                 with _LOCK:
                     batch = state.events[cursor:]
                     cursor += len(batch)
-                    finished = state.status in ("completed", "failed")
+                    finished = state.status in ("completed", "failed", "cancelled")
                 for event in batch:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if finished and not batch:

@@ -32,6 +32,8 @@ def _infer_status(events: list[dict[str, Any]]) -> str:
         return "completed"
     if "task.failed" in kinds:
         return "failed"
+    if "task.cancelled" in kinds:
+        return "cancelled"
     return "running"
 
 
@@ -237,8 +239,14 @@ def verify_bundle_dict(
     result["metadata_ok"] = True
 
     kinds = [event.get("event") for event in events]
-    if "task.completed" in kinds and "task.failed" in kinds:
+    terminal_kinds = [k for k in ("task.completed", "task.failed", "task.cancelled")
+                      if k in kinds]
+    if len(terminal_kinds) > 1:
         return _fail(result, "FAILED", "ambiguous_terminal_events")
+    if inferred_status in ("completed", "failed", "cancelled"):
+        expected_terminal = "task." + inferred_status
+        if expected_terminal not in kinds:
+            return _fail(result, "INCOMPLETE", "missing_terminal_event")
     last = kinds[-1] if kinds else None
     if inferred_status == "running":
         result.update(

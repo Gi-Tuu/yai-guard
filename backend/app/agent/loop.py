@@ -93,6 +93,7 @@ def run_agent(
     max_steps: int | None = None,
     task_timeout_s: int | None = None,
     require_claims: bool = False,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> RunResult:
     limits = policy.limits
     max_steps = int(max_steps or limits.get("max_steps", 20))
@@ -139,6 +140,12 @@ def run_agent(
         })
         while step < max_steps:
             step += 1
+            if should_cancel is not None and should_cancel():
+                record(actor="system", event="task.cancelled", payload={
+                    "reason": "cancel_requested", "steps": step,
+                })
+                run_result = RunResult("cancelled", steps=step)
+                return run_result
             elapsed = time.monotonic() - started
             if elapsed > timeout_s:
                 record(actor="system", event="resource.limit",

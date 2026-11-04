@@ -78,6 +78,14 @@ class TaskServiceTest(unittest.TestCase):
     def test_close_memory_is_safe(self) -> None:
         TaskService().close()
 
+    def test_cancel_request_is_persisted(self) -> None:
+        service = TaskService.from_path(self.path)
+        service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+        service.mark_running("tk")
+        self.assertTrue(service.request_cancel("tk"))
+        self.assertTrue(service.get_record("tk").cancel_requested)
+        service.close()
+
     def test_approval_lifecycle_is_persisted(self) -> None:
         service = TaskService.from_path(self.path)
         service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
