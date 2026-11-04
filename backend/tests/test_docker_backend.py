@@ -159,6 +159,22 @@ class DockerSandboxBackendTest(unittest.TestCase):
         second = sandbox.destroy(task_id)  # already absent: must still be verified
         self.assertTrue(second["verified"], second)
 
+    def test_destroy_immediately_after_timeout_kill(self) -> None:
+        """Regression: destroy must survive the rm/--rm race after a timeout kill."""
+        from app.sandbox.docker_backend import DockerSandbox
+        from app.sandbox.interface import Limits
+
+        sandbox = DockerSandbox(image=IMAGE)
+        for index in range(20):
+            task_id = f"tk_timeout_destroy_{index}"
+            sandbox.create(task_id, Limits(cpu=0.5, memory_mb=256, pids=64,
+                                           timeout_s=10))
+            result = sandbox.exec(task_id, "sleep 30", timeout_s=1)
+            self.assertTrue(result.timed_out, result)
+            destroyed = sandbox.destroy(task_id)
+            self.assertTrue(destroyed["verified"], destroyed)
+            self.assertGreaterEqual(destroyed["attempts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

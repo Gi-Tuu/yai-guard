@@ -195,7 +195,7 @@ Status meanings:
 | `CONTENT_VERIFIED` | Content checks pass; signature was not verified (or only an embedded key self-check) |
 | `INCOMPLETE` | Required evidence (anchor, cleanup, sandbox or execution metadata) is missing |
 | `FAILED` | Hash chain, metadata, final hash, anchor or signature mismatch |
-| `PENDING` | Task is still running |
+| `PENDING` | Task is queued, running, or waiting for approval |
 
 The verifier does not trust bundle summary fields. It recomputes the hash
 chain, verifies that `container_id`, `image_id`, `runtime`, execution records,
@@ -218,6 +218,10 @@ fabricating a confirmed cleanup.
 
 The Lab reports per-probe exit codes and confirmed cleanup, without involving
 the policy engine or model.
+
+## Issues
+
+Bug reports and reproducible findings: <https://github.com/Gi-Tuu/yai-guard/issues>.
 
 ---
 

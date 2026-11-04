@@ -100,7 +100,7 @@ def verify_trace_file(
         "signature_alg": None, "ed25519_ok": None,
         "bad_seq": None, "final_hash": None, "strict": strict,
     }
-    if task_status in ("queued", "running"):
+    if task_status in ("queued", "running", "waiting_approval"):
         result["status"] = "PENDING"
         return result
     if error:
@@ -203,7 +203,11 @@ def verify_trace_file(
     else:
         result["status"] = "VERIFIED"
 
-    result["ok"] = result["status"] == "VERIFIED"
+    # VERIFIED means content plus a verified signature. Unsigned traces are
+    # content-consistent but must not claim signature provenance.
+    if result["status"] == "VERIFIED" and hmac_key is None and public_key is None:
+        result["status"] = "CONTENT_VERIFIED"
+    result["ok"] = result["status"] in ("VERIFIED", "CONTENT_VERIFIED")
     return result
 
 

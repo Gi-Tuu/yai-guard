@@ -133,6 +133,22 @@ class TraceIntegrityTest(unittest.TestCase):
         self.assertTrue(result["anchor_ok"])
         self.assertTrue(result["authentic"])
 
+    def test_unsigned_complete_trace_is_content_verified(self) -> None:
+        self._make(hmac_key=None)
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor)
+        self.assertEqual(result["status"], "CONTENT_VERIFIED")
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(result["authentic"])
+
+    def test_waiting_approval_trace_is_pending(self) -> None:
+        store = TraceStore(self.trace, "tr_waiting")
+        store.append(task_id="tk", actor="system", event="task.created", payload={})
+        result = verify_trace_file(self.trace, task_status="waiting_approval",
+                                   anchor_path=self.anchor)
+        self.assertEqual(result["status"], "PENDING")
+        self.assertFalse(result["ok"])
+
     def test_empty_file_is_invalid(self) -> None:
         self.trace.write_text("", encoding="utf-8")
         result = verify_trace_file(self.trace)

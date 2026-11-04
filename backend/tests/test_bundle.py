@@ -301,6 +301,45 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["reason"], "claim_evidence_mismatch")
 
+    def test_optional_empty_claims_is_not_applicable(self) -> None:
+        for claims in ([], None):
+            events = [{"event": "task.completed", "seq": 1, "payload": {
+                "claims": claims, "claims_required": False,
+            }}]
+            self.assertIsNone(_claims_check(events))
+        required = [{"event": "task.completed", "seq": 1, "payload": {
+            "claims": [], "claims_required": True,
+        }}]
+        self.assertFalse(_claims_check(required))
+
+    def test_mock_task_with_empty_optional_claims_cli_succeeds(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from app.trace.verify_bundle import main as verify_main
+
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="system", event="sandbox.exec",
+                          execution={"argv": "echo hi", "exit_code": 0})
+        self.store.append(task_id="tk", actor="agent", event="task.completed",
+                          payload={"summary": "done", "claims": [],
+                                   "claims_required": False})
+        self.store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
+                          payload={"cleanup": {"verified": True, "container": "abc123"}})
+        self.store.seal(self.anchor)
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        path = self.dir / "bundle.json"
+        path.write_text(json.dumps(bundle), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = verify_main([str(path)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "CONTENT_VERIFIED")
+
     def test_ed25519_signed_bundle_requires_pinned_key_for_verified(self) -> None:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 

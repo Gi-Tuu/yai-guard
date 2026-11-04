@@ -335,6 +335,11 @@ class ApiSecurityTest(unittest.TestCase):
                         break
                     time.sleep(0.05)
                 self.assertTrue(any(key[0] == task_id for key in api.PENDING))
+                pending_verify = self.client.get(
+                    f"/api/tasks/{task_id}/trace/verify", headers=TOKEN_A
+                ).json()
+                self.assertEqual(pending_verify["status"], "PENDING")
+                self.assertFalse(pending_verify["ok"])
 
                 cancelled = self.client.post(f"/api/tasks/{task_id}/cancel", headers=TOKEN_A)
                 self.assertEqual(cancelled.status_code, 200)
@@ -344,7 +349,53 @@ class ApiSecurityTest(unittest.TestCase):
                 verify = self.client.get(
                     f"/api/tasks/{task_id}/trace/verify", headers=TOKEN_A
                 ).json()
-                self.assertEqual(verify["status"], "VERIFIED")
+                self.assertEqual(verify["status"], "CONTENT_VERIFIED")
+                self.assertTrue(verify["ok"])
+        finally:
+            api.POLICY.approval_ttl = old_ttl
+
+    def test_waiting_approval_verify_is_pending_then_content_verified(self) -> None:
+        from app.agent.mock_model import MockModel
+
+        old_ttl = api.POLICY.approval_ttl
+        api.POLICY.approval_ttl = 10
+        try:
+            with mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+                created = self.client.post(
+                    "/api/tasks", json={"task": "approval verify"}, headers=TOKEN_A
+                ).json()
+                task_id = created["task_id"]
+                deadline = time.monotonic() + 5
+                call_id = None
+                while time.monotonic() < deadline:
+                    pending = [key[1] for key in api.PENDING if key[0] == task_id]
+                    if pending:
+                        call_id = pending[0]
+                        break
+                    time.sleep(0.05)
+                self.assertIsNotNone(call_id)
+                pending_verify = self.client.get(
+                    f"/api/tasks/{task_id}/trace/verify", headers=TOKEN_A
+                ).json()
+                self.assertEqual(pending_verify["status"], "PENDING")
+
+                approved = self.client.post(
+                    f"/api/tasks/{task_id}/approvals/{call_id}",
+                    json={"approved": True}, headers=TOKEN_A,
+                )
+                self.assertEqual(approved.status_code, 200)
+                final = _wait(self.client, task_id, TOKEN_A, timeout_s=10)
+                self.assertEqual(final["status"], "completed")
+                verify = self.client.get(
+                    f"/api/tasks/{task_id}/trace/verify", headers=TOKEN_A
+                ).json()
+                self.assertEqual(verify["status"], "CONTENT_VERIFIED")
+                self.assertTrue(verify["ok"])
+                evidence = self.client.get(
+                    f"/api/tasks/{task_id}/evidence", headers=TOKEN_A
+                ).json()
+                self.assertEqual(evidence["verification"]["status"],
+                                 "CONTENT_VERIFIED")
         finally:
             api.POLICY.approval_ttl = old_ttl
 
