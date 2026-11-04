@@ -80,6 +80,7 @@ PENDING: dict[tuple[str, str], dict[str, Any]] = {}
 
 # 公网 Demo 保护：全局并发 = 1（演示期串行，保证容器生命周期可控）
 _TASK_SLOT = threading.BoundedSemaphore(1)
+_SSE_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SSE_MAX_CONNECTIONS", "8")))
 _RATE_LOCK = threading.Lock()
 _RATE_HITS: dict[str, list[float]] = {}
 RATE_WINDOW_S = 60.0
@@ -409,25 +410,30 @@ def get_task(task_id: str, principal: str = Depends(_require_principal)) -> dict
 @app.get("/api/tasks/{task_id}/events")
 def stream_events(task_id: str, principal: str = Depends(_require_principal)) -> StreamingResponse:
     state = _owned_task(task_id, principal)
+    if not _SSE_SLOTS.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="too many active SSE streams")
 
     def generate():
         cursor = 0
         last_ping = time.monotonic()
-        while True:
-            with _LOCK:
-                batch = state.events[cursor:]
-                cursor += len(batch)
-                finished = state.status in ("completed", "failed")
-            for event in batch:
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            if finished and not batch:
-                yield "event: done\ndata: {}\n\n"
-                return
-            # 心跳：防止 Caddy/浏览器把空闲连接判死（SSE 重连会丢开区间的事件）
-            if time.monotonic() - last_ping >= 15.0:
-                last_ping = time.monotonic()
-                yield ": ping\n\n"
-            time.sleep(0.2)
+        try:
+            while True:
+                with _LOCK:
+                    batch = state.events[cursor:]
+                    cursor += len(batch)
+                    finished = state.status in ("completed", "failed")
+                for event in batch:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if finished and not batch:
+                    yield "event: done\ndata: {}\n\n"
+                    return
+                # 心跳：防止 Caddy/浏览器把空闲连接判死（SSE 重连会丢开区间的事件）
+                if time.monotonic() - last_ping >= 15.0:
+                    last_ping = time.monotonic()
+                    yield ": ping\n\n"
+                time.sleep(0.2)
+        finally:
+            _SSE_SLOTS.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
