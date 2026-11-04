@@ -462,6 +462,15 @@ class TaskStore:
             )
             return cursor.rowcount
 
+    def list_queued(self) -> list[TaskRecord]:
+        """Queued tasks can be re-dispatched after a restart without re-running active work."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status = ? ORDER BY created_at",
+                (TaskStatus.QUEUED.value,),
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
     # ------------------------------------------------------------------ stats
     def count_by_status(self) -> dict[str, int]:
         with self._lock:

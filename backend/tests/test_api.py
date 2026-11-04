@@ -35,7 +35,7 @@ os.environ.setdefault("RATE_LIMIT_PER_MIN", "0")
 
 if TestClient is not None:  # 依赖齐全才导入 app
     from app import main as api  # noqa: E402
-from app.tasks import TaskService  # noqa: E402
+from app.tasks import TaskService, TaskStatus  # noqa: E402
 
 TOKEN_A = {"X-Demo-Token": "token-a"}
 TOKEN_B = {"X-Demo-Token": "token-b"}
@@ -367,6 +367,46 @@ class ApiSecurityTest(unittest.TestCase):
             api.POLICY.approval_ttl = old_ttl
             if old_timeout is not None:
                 api.POLICY.limits["task_timeout_s"] = old_timeout
+
+    def test_requeue_queued_tasks_on_startup(self) -> None:
+        from types import SimpleNamespace
+
+        class FakeService:
+            enabled = True
+
+            def __init__(self) -> None:
+                self.finished = []
+
+            def queued_tasks(self):
+                return [
+                    SimpleNamespace(id="q1", trace_id="tr1", prompt="p1",
+                                    owner="u1", cancel_requested=False),
+                    SimpleNamespace(id="q2", trace_id="tr2", prompt="p2",
+                                    owner="u1", cancel_requested=True),
+                ]
+
+            def finish(self, task_id, status, **kwargs):
+                self.finished.append((task_id, status))
+
+        class FakeExecutor:
+            def __init__(self) -> None:
+                self.submitted = []
+
+            def submit(self, fn, state):
+                self.submitted.append(state)
+
+        service = FakeService()
+        executor = FakeExecutor()
+        with mock.patch.object(api, "TASK_SERVICE", service), \
+                mock.patch.object(api, "_TASK_EXECUTOR", executor), \
+                mock.patch.object(api, "_reserve_queue_slot", return_value=True), \
+                mock.patch.dict(api.TASKS, {}, clear=True):
+            summary = api._requeue_queued_tasks()
+            self.assertEqual(summary["requeued"], ["q1"])
+            self.assertEqual([s.task_id for s in executor.submitted], ["q1"])
+            self.assertEqual(executor.submitted[0].status, "queued")
+            self.assertIn(("q2", TaskStatus.CANCELLED), service.finished)
+            self.assertIn("q1", api.TASKS)
 
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:

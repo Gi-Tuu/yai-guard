@@ -187,6 +187,15 @@ class TaskService:
             return []
 
     # ---------------------------------------------------------------- reads
+    def queued_tasks(self) -> list[TaskRecord]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.list_queued()
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return []
+
     def get_record(self, task_id: str) -> TaskRecord | None:
         if self.store is None:
             return None
