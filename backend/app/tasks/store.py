@@ -20,7 +20,7 @@ from .models import (
     can_transition,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _TASKS = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -74,9 +74,16 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
     conn.executescript(_INDEXES)
 
 
+def _migration_v2(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE tasks ADD COLUMN updated_at REAL")
+    conn.execute(
+        "UPDATE tasks SET updated_at = COALESCE(finished_at, started_at, created_at)"
+    )
+
+
 # Ordered migration steps. Add a new function and bump SCHEMA_VERSION for any
 # future schema change; never edit an already-released step.
-_MIGRATIONS = {1: _migration_v1}
+_MIGRATIONS = {1: _migration_v1, 2: _migration_v2}
 
 
 class TaskAlreadyExists(RuntimeError):
@@ -146,6 +153,7 @@ class TaskStore:
             worker_id=row["worker_id"],
             attempt=row["attempt"],
             version=row["version"],
+            updated_at=row["updated_at"],
         )
 
     def _get_locked(self, task_id: str) -> TaskRecord | None:
@@ -168,9 +176,10 @@ class TaskStore:
         with self._lock, self._conn:
             try:
                 self._conn.execute(
-                    "INSERT INTO tasks (id, trace_id, owner, prompt, status, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (task_id, trace_id, owner, prompt, TaskStatus.QUEUED.value, created),
+                    "INSERT INTO tasks (id, trace_id, owner, prompt, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (task_id, trace_id, owner, prompt, TaskStatus.QUEUED.value,
+                     created, created),
                 )
             except sqlite3.IntegrityError as exc:
                 raise TaskAlreadyExists(f"task/trace already exists: {task_id}") from exc
@@ -238,8 +247,8 @@ class TaskStore:
                 return None
             if expected_version is not None and current.version != expected_version:
                 return None
-            assignments = ["status = ?", "version = version + 1"]
-            values: list[Any] = [destination.value]
+            assignments = ["status = ?", "version = version + 1", "updated_at = ?"]
+            values: list[Any] = [destination.value, time.time()]
             for column, value in (
                 ("summary", summary),
                 ("error", error),
@@ -289,12 +298,13 @@ class TaskStore:
                 cursor = self._conn.execute(
                     "UPDATE tasks SET status = ?, worker_id = ?, lease_until = ?, "
                     "started_at = COALESCE(started_at, ?), attempt = attempt + 1, "
-                    "version = version + 1 "
+                    "updated_at = ?, version = version + 1 "
                     "WHERE id = ? AND status = ? AND version = ?",
                     (
                         TaskStatus.RUNNING.value,
                         worker_id,
                         current + lease_seconds,
+                        current,
                         current,
                         row["id"],
                         TaskStatus.QUEUED.value,
@@ -321,10 +331,11 @@ class TaskStore:
         current = time.time() if now is None else now
         with self._lock, self._conn:
             cursor = self._conn.execute(
-                "UPDATE tasks SET lease_until = ? "
+                "UPDATE tasks SET lease_until = ?, updated_at = ? "
                 "WHERE id = ? AND worker_id = ? AND status IN (?, ?)",
                 (
                     current + lease_seconds,
+                    current,
                     task_id,
                     worker_id,
                     TaskStatus.RUNNING.value,
@@ -375,9 +386,9 @@ class TaskStore:
             self._conn.execute(
                 "UPDATE tasks SET status = ?, summary = ?, error = ?, "
                 "finished_at = ?, lease_until = NULL, worker_id = NULL, "
-                "version = version + 1 WHERE id = ? AND status = ?",
+                "updated_at = ?, version = version + 1 WHERE id = ? AND status = ?",
                 (
-                    destination.value, summary, error, finished, task_id,
+                    destination.value, summary, error, finished, finished, task_id,
                     TaskStatus.INTERRUPTED.value,
                 ),
             )
@@ -426,10 +437,11 @@ class TaskStore:
             for task_id in ids:
                 self._conn.execute(
                     "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
-                    "lease_until = NULL, worker_id = NULL, version = version + 1 "
+                    "lease_until = NULL, worker_id = NULL, updated_at = ?, "
+                    "version = version + 1 "
                     "WHERE id = ? AND status IN (?, ?)",
                     (
-                        TaskStatus.INTERRUPTED.value, reason, finished, task_id,
+                        TaskStatus.INTERRUPTED.value, reason, finished, finished, task_id,
                         TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
                     ),
                 )
@@ -441,9 +453,11 @@ class TaskStore:
             if current is None or current.terminal:
                 return False
             cursor = self._conn.execute(
-                "UPDATE tasks SET cancel_requested = 1, version = version + 1 "
+                "UPDATE tasks SET cancel_requested = 1, updated_at = ?, "
+                "version = version + 1 "
                 "WHERE id = ? AND cancel_requested = 0 AND status NOT IN (?, ?, ?, ?)",
                 (
+                    time.time(),
                     task_id,
                     TaskStatus.COMPLETED.value,
                     TaskStatus.FAILED.value,

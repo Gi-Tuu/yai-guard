@@ -89,6 +89,7 @@ class TaskRecord:
     worker_id: str | None = None
     attempt: int = 0
     version: int = 0
+    updated_at: float = 0.0
 
     @property
     def terminal(self) -> bool:

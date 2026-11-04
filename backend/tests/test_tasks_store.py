@@ -191,15 +191,37 @@ class TaskStoreTest(unittest.TestCase):
 
     def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
         version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(int(version), 1)
+        self.assertEqual(int(version), 2)
         self.store.close()
         reopened = TaskStore(self.path)
         try:
             self.assertEqual(
-                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 1,
+                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 2,
             )
         finally:
             reopened.close()
+
+    def test_v1_database_migrates_to_v2(self) -> None:
+        import sqlite3
+        from app.tasks.store import _migration_v1
+
+        v1_path = pathlib.Path(self.tmp.name) / "v1.db"
+        conn = sqlite3.connect(v1_path)
+        _migration_v1(conn)
+        conn.execute("PRAGMA user_version=1")
+        conn.commit()
+        conn.close()
+        migrated = TaskStore(v1_path)
+        try:
+            self.assertEqual(
+                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 2,
+            )
+            columns = {row[1] for row in migrated._conn.execute("PRAGMA table_info(tasks)")}
+            self.assertIn("updated_at", columns)
+            migrated.create_task(task_id="new", trace_id="tr_new", owner="u", prompt="x")
+            self.assertIsNotNone(migrated.get_task("new"))
+        finally:
+            migrated.close()
 
 
 if __name__ == "__main__":
