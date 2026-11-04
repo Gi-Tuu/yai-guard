@@ -166,6 +166,11 @@ _RATE_HITS: dict[str, list[float]] = {}
 RATE_WINDOW_S = 60.0
 _MISSING = object()
 TASK_STATE_TTL_S = int(os.environ.get("TASK_STATE_TTL_S", "3600"))
+TASK_LEASE_SECONDS = max(1.0, float(os.environ.get("TASK_LEASE_SECONDS", "60")))
+TASK_HEARTBEAT_SECONDS = max(
+    0.5, float(os.environ.get("TASK_HEARTBEAT_SECONDS",
+                              str(min(20.0, TASK_LEASE_SECONDS / 3)))),
+)
 
 
 def _configured_tokens() -> set[str]:
@@ -506,9 +511,9 @@ def _run_task(state: TaskState, *, already_claimed: bool = False,
         heartbeat_stop = threading.Event()
 
         def _heartbeat() -> None:
-            while not heartbeat_stop.wait(20):
+            while not heartbeat_stop.wait(TASK_HEARTBEAT_SECONDS):
                 TASK_SERVICE.heartbeat(state.task_id, worker_id=state.worker_id,
-                                       lease_seconds=60)
+                                       lease_seconds=TASK_LEASE_SECONDS)
 
         if TASK_SERVICE.enabled:
             threading.Thread(target=_heartbeat, name=f"heartbeat-{state.task_id}",
@@ -688,7 +693,9 @@ def _multi_worker_loop(worker_id: str) -> None:
         if not _EXEC_SLOTS.acquire(blocking=False):
             time.sleep(0.5)
             continue
-        record = TASK_SERVICE.claim_next(worker_id=worker_id, lease_seconds=60)
+        record = TASK_SERVICE.claim_next(
+            worker_id=worker_id, lease_seconds=TASK_LEASE_SECONDS,
+        )
         if record is None:
             _release_exec_slot()
             time.sleep(0.5)

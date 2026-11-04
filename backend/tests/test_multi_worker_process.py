@@ -95,6 +95,9 @@ class MultiWorkerProcessTest(unittest.TestCase):
             "TASK_STORE": "sqlite",
             "TASK_RUNTIME_MODE": "multi",
             "TASK_WORKERS": "1",
+            "TASK_LEASE_SECONDS": "2",
+            "TASK_HEARTBEAT_SECONDS": "1",
+            "MULTI_RECOVERY_INTERVAL_S": "1",
             "MOCK_MODEL": "1",
             "SANDBOX_DRIVER": "fake",
             "ALLOW_ANONYMOUS": "1",
@@ -164,3 +167,29 @@ class MultiWorkerProcessTest(unittest.TestCase):
         worker_ids = {row[1].split("-", 1)[0] for row in rows if row[1]}
         self.assertEqual(len(worker_ids), 2, rows)
         self.assertEqual({row[0] for row in rows}, {first_id, second_id})
+
+    def test_worker_kill_recovers_active_lease(self) -> None:
+        port_a, port_b = _free_port(), _free_port()
+        first = self._start(port_a)
+        created = _request(port_a, "POST", "/api/tasks",
+                           {"task": "chaos lease recovery"})
+        task_id = created["task_id"]
+        _wait_status(port_a, task_id, "waiting_approval")
+        second = self._start(port_b)
+
+        # The first process owns the waiting lease. Kill that OS process, keep
+        # the second process alive so it can run maintenance recovery.
+        first.kill()
+        first.wait(timeout=10)
+        recovered = _wait_status(port_b, task_id, "interrupted", timeout=30)
+        self.assertEqual(recovered.get("error"), "lease_expired")
+
+        raw = urllib.request.urlopen(
+            f"http://127.0.0.1:{port_b}/api/tasks/{task_id}/trace.jsonl",
+            timeout=10,
+        ).read().decode()
+        self.assertIn("task.interrupted", raw)
+        verified = _request(port_b, "GET", f"/api/tasks/{task_id}/trace/verify")
+        self.assertIn(verified.get("status"), ("CONTENT_VERIFIED", "VERIFIED"))
+        self.assertTrue(verified.get("ok"), verified)
+        self.assertIsNone(second.poll())
