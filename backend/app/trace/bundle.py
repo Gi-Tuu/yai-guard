@@ -78,6 +78,28 @@ def _approvals_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
+def _claims_check(events: list[dict[str, Any]]) -> bool | None:
+    """If task.completed carries claims, every claim must cite a real sandbox.exec seq."""
+    completed = next((e for e in events if e.get("event") == "task.completed"), None)
+    if completed is None:
+        return None
+    payload = completed.get("payload") or {}
+    claims = payload.get("claims")
+    if claims is None:
+        return None
+    exec_seqs = {e.get("seq") for e in events if e.get("event") == "sandbox.exec"}
+    if not isinstance(claims, list) or not claims:
+        return False
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return False
+        if not str(claim.get("text") or "").strip():
+            return False
+        if claim.get("evidence_seq") not in exec_seqs:
+            return False
+    return True
+
+
 def build_bundle(
     trace_path: str | Path,
     *,
@@ -172,6 +194,7 @@ def verify_bundle_dict(
         "execution_ok": False,
         "policy_ok": False,
         "approvals_ok": False,
+        "claims_ok": None,
         "anchor_ok": False,
     }
     if bundle.get("schema") != BUNDLE_SCHEMA:
@@ -267,6 +290,16 @@ def verify_bundle_dict(
     if approvals != expected_approvals:
         return _fail(result, "FAILED", "approval_metadata_mismatch")
     result["approvals_ok"] = True
+
+    claims_ok = _claims_check(events)
+    result["claims_ok"] = claims_ok
+    completed_payload = next(
+        (e.get("payload") or {} for e in events if e.get("event") == "task.completed"), {}
+    )
+    if completed_payload.get("claims_verified") is True and claims_ok is not True:
+        return _fail(result, "FAILED", "claim_evidence_mismatch")
+    if claims_ok is False:
+        return _fail(result, "FAILED", "claim_evidence_mismatch")
 
     expected_execution = _execution_from_events(events)
     execution = (bundle.get("execution") or {}).get("results") or []
