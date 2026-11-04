@@ -301,5 +301,22 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["reason"], "claim_evidence_mismatch")
 
+    def test_cancelled_bundle_without_execution_is_content_verified(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="system", event="task.cancelled",
+                          payload={"reason": "cancel_requested"})
+        self.store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed",
+                          payload={"cleanup": {"verified": True, "container": "abc123"}})
+        self.store.seal(self.anchor)
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        result = verify_bundle_dict(bundle)
+        self.assertEqual(result["status"], "CONTENT_VERIFIED")
+        self.assertTrue(result["execution_ok"])
+
 if __name__ == "__main__":
     unittest.main()
