@@ -140,18 +140,18 @@ def run_agent(
         })
         while step < max_steps:
             step += 1
-            if should_cancel is not None and should_cancel():
-                record(actor="system", event="task.cancelled", payload={
-                    "reason": "cancel_requested", "steps": step,
-                })
-                run_result = RunResult("cancelled", steps=step)
-                return run_result
             elapsed = time.monotonic() - started
             if elapsed > timeout_s:
                 record(actor="system", event="resource.limit",
                        payload={"kind": "task_timeout", "elapsed_s": round(elapsed, 1)})
                 record(actor="system", event="task.failed", payload={"reason": "task_timeout"})
                 run_result = RunResult("failed", steps=step, error="task_timeout")
+                return run_result
+            if should_cancel is not None and should_cancel():
+                record(actor="system", event="task.cancelled", payload={
+                    "reason": "cancel_requested", "steps": step,
+                })
+                run_result = RunResult("cancelled", steps=step)
                 return run_result
 
             ctx = EvalContext(step=step, max_steps=max_steps, elapsed_s=elapsed,

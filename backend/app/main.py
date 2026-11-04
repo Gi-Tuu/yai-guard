@@ -82,6 +82,7 @@ class TaskState:
     created_at: float = field(default_factory=time.time)
     events: list[dict] = field(default_factory=list)
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    deadline_at: float = 0.0
 
 
 TASKS: dict[str, TaskState] = {}
@@ -302,7 +303,10 @@ def _approver(state: TaskState):
 
         # 审批等待不占用执行槽：把槽让给其它任务，决定后再抢回。
         _release_exec_slot()
-        deadline = time.monotonic() + POLICY.approval_ttl
+        now = time.monotonic()
+        deadline = now + POLICY.approval_ttl
+        if state.deadline_at:
+            deadline = min(deadline, state.deadline_at)
         decided = False
         cancelled = False
         try:
@@ -346,9 +350,17 @@ def _run_task(state: TaskState) -> None:
     final_status = "failed"
     final_summary = ""
     final_error: str | None = None
+    deadline_timer: threading.Timer | None = None
     _release_queue_slot()
     _EXEC_SLOTS.acquire()
     try:
+        task_timeout_s = int(POLICY.limits.get("task_timeout_s", 900))
+        state.deadline_at = time.monotonic() + task_timeout_s
+        # Hard wake at the task deadline: approval waits and slow steps return
+        # to the loop, which records a task_timeout failure.
+        deadline_timer = threading.Timer(task_timeout_s, state.cancel_event.set)
+        deadline_timer.daemon = True
+        deadline_timer.start()
         trace = TraceStore(TRACES / f"{state.trace_id}.jsonl", state.trace_id)
         trace.append(task_id=state.task_id, actor="user", event="task.created",
                      payload={"task": state.task})
@@ -387,6 +399,8 @@ def _run_task(state: TaskState) -> None:
                 except Exception:  # noqa: BLE001
                     pass
     finally:
+        if deadline_timer is not None:
+            deadline_timer.cancel()
         # Seal before publishing the terminal status so readers never see a
         # completed task whose anchor was still missing.
         if trace is not None:
