@@ -21,6 +21,8 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 IMAGE = "yaiguard/sandbox-py:1.0"
+RUNTIME = os.environ.get("TEST_SANDBOX_RUNTIME") or None
+RUNTIME_ARGS = ["--runtime", RUNTIME] if RUNTIME else []
 HARDENING = [
     "--network=none", "--read-only", "--cap-drop=ALL",
     "--security-opt=no-new-privileges:true", "--user=65534:65534",
@@ -60,7 +62,7 @@ class DockerContainmentTest(unittest.TestCase):
 
     def test_m1_readonly_root_but_workspace_writable(self) -> None:
         result = _run([
-            "docker", "run", "--rm", *HARDENING,
+            "docker", "run", "--rm", *RUNTIME_ARGS, *HARDENING,
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
             "--mount", "type=tmpfs,destination=/workspace,tmpfs-size=67108864,tmpfs-mode=1777",
             "--pids-limit=128", "--memory=256m", "--cpus=1",
@@ -75,7 +77,7 @@ class DockerContainmentTest(unittest.TestCase):
         name = "yaig-test-m2"
         _run(["docker", "rm", "-f", name])
         created = _run([
-            "docker", "run", "-d", "--name", name,
+            "docker", "run", "-d", "--name", name, *RUNTIME_ARGS,
             "--pids-limit=64", "--memory=128m", "--network=none",
             IMAGE, "sh", "-c", "b(){ b|b& }; b; sleep 10; echo after",
         ])
@@ -109,7 +111,7 @@ class DockerContainmentTest(unittest.TestCase):
             "print('interfaces', sorted(os.listdir('/sys/class/net')))\n"
         )
         result = _run([
-            "docker", "run", "--rm", *HARDENING,
+            "docker", "run", "--rm", *RUNTIME_ARGS, *HARDENING,
             "--mount", "type=tmpfs,destination=/workspace,tmpfs-size=67108864,tmpfs-mode=1777",
             IMAGE, "python3", "-c", script,
         ])
@@ -125,7 +127,7 @@ class DockerSandboxBackendTest(unittest.TestCase):
         from app.sandbox.docker_backend import DockerSandbox
         from app.sandbox.interface import Limits
 
-        sandbox = DockerSandbox(image=IMAGE)
+        sandbox = DockerSandbox(image=IMAGE, runtime=RUNTIME)
         task_id = "tk_docker_test"
         try:
             sandbox.create(task_id, Limits(cpu=0.5, memory_mb=256, pids=64, timeout_s=30))
@@ -151,7 +153,7 @@ class DockerSandboxBackendTest(unittest.TestCase):
         from app.sandbox.docker_backend import DockerSandbox
         from app.sandbox.interface import Limits
 
-        sandbox = DockerSandbox(image=IMAGE)
+        sandbox = DockerSandbox(image=IMAGE, runtime=RUNTIME)
         task_id = "tk_destroy_verify"
         sandbox.create(task_id, Limits(timeout_s=10))
         first = sandbox.destroy(task_id)
@@ -164,7 +166,7 @@ class DockerSandboxBackendTest(unittest.TestCase):
         from app.sandbox.docker_backend import DockerSandbox
         from app.sandbox.interface import Limits
 
-        sandbox = DockerSandbox(image=IMAGE)
+        sandbox = DockerSandbox(image=IMAGE, runtime=RUNTIME)
         for index in range(20):
             task_id = f"tk_timeout_destroy_{index}"
             sandbox.create(task_id, Limits(cpu=0.5, memory_mb=256, pids=64,
@@ -178,3 +180,4 @@ class DockerSandboxBackendTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
