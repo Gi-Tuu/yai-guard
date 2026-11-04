@@ -86,6 +86,72 @@ jobs:
           echo "leftover=$left"
           test "$left" -eq 0
 
+  gvisor-integration:
+    name: gvisor runsc integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+      - name: Install runsc (ptrace; runner has no /dev/kvm)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          cd /tmp
+          curl -fsSLo gvisor.tar.zstd https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.zstd
+          curl -fsSLo gvisor.tar.zstd.sha512 https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.zstd.sha512
+          sha512sum -c gvisor.tar.zstd.sha512
+          sudo tar --zstd -xf gvisor.tar.zstd -C /usr/local/bin
+          /usr/local/bin/runsc --version
+          sudo python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("/etc/docker/daemon.json")
+          data = json.loads(p.read_text()) if p.exists() else {}
+          data.setdefault("runtimes", {})["runsc"] = {"path": "/usr/local/bin/runsc"}
+          p.write_text(json.dumps(data))
+          PY
+          sudo systemctl restart docker
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}'
+      - name: Build images
+        run: |
+          docker build -f deploy/sandbox/Dockerfile -t yaiguard/sandbox-py:1.0 .
+          docker build -f backend/Dockerfile.controller -t yaiguard/controller:gvisor .
+      - name: Start controller with runsc
+        run: |
+          DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+          docker run -d --name yaig-gvisor-controller \
+            --group-add "$DOCKER_GID" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e SANDBOX_TOKEN=ci-token -e SANDBOX_RUNTIME=runsc \
+            -e SANDBOX_IMAGE=yaiguard/sandbox-py:1.0 \
+            -p 127.0.0.1:19000:9000 yaiguard/controller:gvisor
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:19000/healthz >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:19000/healthz
+      - name: gVisor Docker + controller tests
+        env:
+          REQUIRE_DOCKER_TESTS: "1"
+          TEST_SANDBOX_RUNTIME: runsc
+          CONTROLLER_URL: http://127.0.0.1:19000
+          CONTROLLER_TOKEN: ci-token
+        run: |
+          python -m unittest discover -s backend/tests -t backend -p "test_docker_backend.py" -v
+          python -m unittest discover -s backend/tests -t backend -p "test_controller_container.py" -v
+      - name: No leftover gVisor sandbox containers
+        run: |
+          left=$(docker ps -a --filter label=yaig.task --format '{{.Names}}' | wc -l)
+          echo "leftover=$left"
+          test "$left" -eq 0
+
   deploy-config:
     name: deployment config validation
     runs-on: ubuntu-latest
