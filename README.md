@@ -1,10 +1,22 @@
-# YAI Guard
+# YAI Guard — Prove-It Code Runner
 
-**Secure autonomous execution agent — plan, gate, execute, verify.**
+**Verifiable execution for coding agents — plan, gate, execute, prove.**
 
-YAI Guard turns a natural-language task into real terminal/file operations, but every execution is confined to a one-shot, hardened container on a separate sandbox host. The application process never holds a Docker socket; a deterministic policy engine gates every tool call; and every event is written to a SHA-256 hash-chained trace that can be verified offline.
+YAI Guard turns a coding task into real terminal/file operations, but every execution is confined to a one-shot, hardened container on a separate sandbox host. The application process never holds a Docker socket; a deterministic policy engine gates every tool call; and every event is written to a SHA-256 hash-chained trace that can be verified offline.
 
 **Live demo:** https://167-179-65-59.sslip.io
+
+---
+
+## Use case: prove what a coding agent actually ran
+
+A coding agent says “fixed” or “tests pass”. YAI Guard makes that claim checkable instead of trusting the agent's summary or a vendor dashboard:
+
+1. run the task in a disposable container;
+2. record the real argv, exit code, output hashes, policy decisions, approval and cleanup;
+3. export an evidence bundle that a reviewer can re-verify offline.
+
+The reviewer does not need the original API, the model, or the agent process to check the result.
 
 ---
 

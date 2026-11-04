@@ -6,6 +6,7 @@
 # - 缺少关键字段（container/image/runtime/cleanup/anchor）时返回 INCOMPLETE，绝不 VERIFIED。
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
@@ -62,6 +63,21 @@ def _execution_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
+def _policy_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"seq": e.get("seq"), "rule_id": e["policy"].get("rule_id"),
+         "effect": e["policy"].get("effect"), "reason": e["policy"].get("reason")}
+        for e in events if e.get("event") == "policy.decision" and e.get("policy")
+    ]
+
+
+def _approvals_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"seq": e.get("seq"), "payload": copy.deepcopy(e.get("payload"))}
+        for e in events if e.get("event") == "approval.resolved"
+    ]
+
+
 def build_bundle(
     trace_path: str | Path,
     *,
@@ -85,7 +101,7 @@ def build_bundle(
     cleanup = {}
     for e in events:
         if e.get("event") in ("sandbox.destroy.confirmed", "sandbox.destroy.unverified"):
-            cleanup = e.get("payload") or {}
+            cleanup = copy.deepcopy(e.get("payload") or {})
 
     return {
         "schema": BUNDLE_SCHEMA,
@@ -96,18 +112,11 @@ def build_bundle(
         },
         "policy": {
             "version": 1,
-            "decisions": [
-                {"seq": e.get("seq"), "rule_id": e["policy"].get("rule_id"),
-                 "effect": e["policy"].get("effect"), "reason": e["policy"].get("reason")}
-                for e in events if e.get("event") == "policy.decision" and e.get("policy")
-            ],
+            "decisions": _policy_from_events(events),
         },
         "sandbox": sandbox,
         "execution": {"results": _execution_from_events(events)},
-        "approvals": [
-            {"seq": e.get("seq"), "payload": e.get("payload")}
-            for e in events if e.get("event") == "approval.resolved"
-        ],
+        "approvals": _approvals_from_events(events),
         "lifecycle": {
             "destroy": cleanup,
             "confirmed": bool(cleanup.get("cleanup", {}).get("verified")) if cleanup else False,
@@ -161,6 +170,8 @@ def verify_bundle_dict(
         "final_hash_ok": False,
         "sandbox_ok": False,
         "execution_ok": False,
+        "policy_ok": False,
+        "approvals_ok": False,
         "anchor_ok": False,
     }
     if bundle.get("schema") != BUNDLE_SCHEMA:
@@ -240,6 +251,22 @@ def verify_bundle_dict(
         return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
     if not expected_confirmed:
         return _fail(result, "INCOMPLETE", "cleanup_not_confirmed")
+
+    policy = (bundle.get("policy") or {}).get("decisions")
+    expected_policy = _policy_from_events(events)
+    if policy is None:
+        return _fail(result, "INCOMPLETE", "missing_bundle_policy_decisions")
+    if policy != expected_policy:
+        return _fail(result, "FAILED", "policy_metadata_mismatch")
+    result["policy_ok"] = True
+
+    approvals = bundle.get("approvals")
+    expected_approvals = _approvals_from_events(events)
+    if approvals is None:
+        return _fail(result, "INCOMPLETE", "missing_bundle_approvals")
+    if approvals != expected_approvals:
+        return _fail(result, "FAILED", "approval_metadata_mismatch")
+    result["approvals_ok"] = True
 
     expected_execution = _execution_from_events(events)
     execution = (bundle.get("execution") or {}).get("results") or []
