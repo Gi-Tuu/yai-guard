@@ -23,6 +23,7 @@ class TaskService:
         if store is not None:
             try:
                 store.recover_interrupted()
+                store.expire_pending_approvals()
             except Exception as exc:  # noqa: BLE001 - recovery is best-effort
                 self._degraded = True
                 self._error = f"recovery failed: {type(exc).__name__}: {exc}"

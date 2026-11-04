@@ -54,6 +54,18 @@ class TaskServiceTest(unittest.TestCase):
         service.finish("tk", TaskStatus.COMPLETED)
         service.close()
 
+    def test_restart_expires_pending_approvals(self) -> None:
+        first = TaskService.from_path(self.path)
+        first.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+        first.create_approval(task_id="tk", call_id="call_1", owner="u", ttl_s=60)
+        self.assertEqual(len(first.pending_approvals("tk")), 1)
+        first.close()
+
+        second = TaskService.from_path(self.path)
+        self.assertEqual(second.pending_approvals("tk"), [])
+        self.assertEqual(second.get_approval("tk", "call_1")["status"], "expired")
+        second.close()
+
     def test_restart_recovers_active_tasks(self) -> None:
         first = TaskService.from_path(self.path)
         first.create(task_id="running", trace_id="tr1", owner="u", prompt="x")
