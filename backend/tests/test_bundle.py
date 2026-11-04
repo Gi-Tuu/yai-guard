@@ -166,5 +166,30 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(result["reason"], "hmac_missing")
         self.assertFalse(result["signature_ok"])
 
+
+    def test_bundle_cleanup_metadata_must_match_event(self) -> None:
+        self._make()
+        bundle = build_bundle(self.trace, anchor_path=self.anchor, hmac_key="k")
+        bundle["lifecycle"]["destroy"]["cleanup"]["verified"] = False
+        result = verify_bundle_dict(bundle, hmac_key="k")
+        self.assertEqual(result["status"], "FAILED")
+
+    def test_destroyed_without_confirmed_is_incomplete(self) -> None:
+        self.store.append(task_id="tk", actor="user", event="task.created", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
+            "runtime": "runc",
+            "sandbox": {"backend": "docker", "runtime": "runc",
+                        "container_id": "abc123", "image_id": "sha256:img"},
+        })
+        self.store.append(task_id="tk", actor="system", event="sandbox.exec",
+                          execution={"argv": "echo hi", "exit_code": 0})
+        self.store.append(task_id="tk", actor="agent", event="task.completed", payload={})
+        self.store.append(task_id="tk", actor="system", event="sandbox.destroyed",
+                          payload={"cleanup": {"verified": True}})
+        self.store.seal(self.anchor)
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        result = verify_bundle_dict(bundle)
+        self.assertEqual(result["status"], "INCOMPLETE")
+
 if __name__ == "__main__":
     unittest.main()

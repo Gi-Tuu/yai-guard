@@ -105,8 +105,41 @@ docs/           engineering notes and evidence
 Verify a downloaded evidence bundle:
 
 ```bash
+# content consistency (chain, metadata, execution, cleanup, anchor)
 python -m app.trace.verify_bundle path/to/evidence.json
+
+# additionally require the anchor HMAC signature
+python -m app.trace.verify_bundle path/to/evidence.json --require-signature
 ```
+
+Status meanings:
+
+| Status | Meaning |
+|---|---|
+| `VERIFIED` | Content checks pass and the anchor signature is verified |
+| `CONTENT_VERIFIED` | Content checks pass; signature was not verified |
+| `INCOMPLETE` | Required evidence (anchor, cleanup, sandbox or execution metadata) is missing |
+| `FAILED` | Hash chain, metadata, final hash, anchor or signature mismatch |
+| `PENDING` | Task is still running |
+
+The verifier does not trust bundle summary fields. It recomputes the hash
+chain, verifies that `container_id`, `image_id`, `runtime`, execution records,
+cleanup state and final hash match the raw events, and checks the anchor HMAC
+when a key is supplied.
+
+## Containment Lab
+
+`POST /api/containment/run` executes four direct sandbox probes:
+
+| Probe | Expected result |
+|---|---|
+| `read_only_root` | write to `/etc/hostname` is denied |
+| `network_none` | outbound connection is unreachable |
+| `no_docker_socket` | `/var/run/docker.sock` is absent |
+| `no_secrets` | no inference, sandbox or demo token in the container env |
+
+The Lab reports per-probe exit codes and confirmed cleanup, without involving
+the policy engine or model.
 
 ---
 
