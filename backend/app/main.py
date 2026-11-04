@@ -546,6 +546,7 @@ def _trace_health() -> tuple[bool, str | None]:
 
 _REAPER_STARTED = False
 _REQUEUE_STARTED = False
+_RETENTION_STARTED = False
 _DISPATCH_LOCK = threading.Lock()
 _DISPATCHED_QUEUED: set[str] = set()
 
@@ -555,6 +556,45 @@ def _run_orphan_reaper(*, grace_s: float = 60.0, dry_run: bool = False) -> dict[
     return reap_task_orphans(
         TASK_SERVICE, sandbox, grace_s=grace_s, dry_run=dry_run,
     )
+
+
+def _prune_old_state() -> dict[str, Any]:
+    """Delete terminal tasks/traces older than TASK_RETENTION_DAYS (0 disables)."""
+    summary: dict[str, Any] = {"ok": True, "removed": [], "traces": [],
+                               "retention_days": 0, "skipped_reason": None}
+    if not TASK_SERVICE.enabled:
+        summary["skipped_reason"] = "task store disabled"
+        return summary
+    try:
+        days = float(os.environ.get("TASK_RETENTION_DAYS", "30"))
+    except ValueError:
+        days = 30.0
+    summary["retention_days"] = days
+    if days <= 0:
+        summary["skipped_reason"] = "retention disabled"
+        return summary
+    records = TASK_SERVICE.prune_terminal_before(time.time() - days * 86400)
+    for record in records:
+        summary["removed"].append(record.id)
+        for suffix in (".jsonl", ".anchor.json"):
+            path = TRACES / f"{record.trace_id}{suffix}"
+            try:
+                if path.exists():
+                    path.unlink()
+                    summary["traces"].append(str(path))
+            except OSError:
+                summary["ok"] = False
+    return summary
+
+
+def _retention_loop() -> None:
+    interval = max(60, int(os.environ.get("RETENTION_INTERVAL_S", "21600")))
+    while True:
+        time.sleep(interval)
+        try:
+            _prune_old_state()
+        except Exception:  # noqa: BLE001 - retention must not crash the app
+            pass
 
 
 def _reaper_loop() -> None:
@@ -685,7 +725,7 @@ def _requeue_loop() -> None:
 @app.on_event("startup")
 def _reap_stale_sandboxes() -> None:
     """Reap only containers that cannot belong to a healthy durable task."""
-    global _REAPER_STARTED, _REQUEUE_STARTED
+    global _REAPER_STARTED, _REQUEUE_STARTED, _RETENTION_STARTED
     if not _RUNTIME_LOCK_OK:
         return
     if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
@@ -711,6 +751,15 @@ def _reap_stale_sandboxes() -> None:
             _record_interrupted_events()
         except Exception:  # noqa: BLE001 - do not block startup
             pass
+        try:
+            _prune_old_state()
+        except Exception:  # noqa: BLE001 - do not block startup
+            pass
+        if (os.environ.get("TASK_RETENTION_DAYS", "30") != "0"
+                and not _RETENTION_STARTED):
+            _RETENTION_STARTED = True
+            threading.Thread(target=_retention_loop, name="task-retention",
+                             daemon=True).start()
         return
     try:
         from app.sandbox.remote_backend import RemoteSandbox
