@@ -239,5 +239,16 @@ class TraceIntegrityTest(unittest.TestCase):
                                    anchor_path=self.anchor, hmac_key="k", strict=True)
         self.assertEqual(result["status"], "VERIFIED")
 
+    def test_strict_interrupted_trace_without_cleanup_is_verified(self) -> None:
+        store = TraceStore(self.trace, "tr_interrupted")
+        store.append(task_id="tk", actor="system", event="task.created", payload={})
+        store.append(task_id="tk", actor="system", event="task.interrupted",
+                     payload={"reason": "app_restart"})
+        store.seal(self.anchor, hmac_key="k")
+        result = verify_trace_file(self.trace, task_status="interrupted",
+                                   anchor_path=self.anchor, hmac_key="k", strict=True)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertIsNone(result["cleanup_ok"])
+
 if __name__ == "__main__":
     unittest.main()

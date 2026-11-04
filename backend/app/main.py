@@ -494,6 +494,35 @@ def _reaper_loop() -> None:
             pass
 
 
+def _record_interrupted_events() -> list[str]:
+    """Make recovery visible in the trace, idempotently, for every interrupted task."""
+    recorded: list[str] = []
+    if not TASK_SERVICE.enabled:
+        return recorded
+    for record in TASK_SERVICE.interrupted_tasks():
+        path = TRACES / f"{record.trace_id}.jsonl"
+        if not path.exists():
+            continue
+        try:
+            trace = TraceStore(path, record.trace_id)
+            events = trace.read()
+            if not events or any(e.get("event") == "task.interrupted" for e in events):
+                continue
+            trace.append(
+                task_id=record.id, actor="system", event="task.interrupted",
+                payload={"reason": "app_restart", "recovered_from": "durable_task_store"},
+            )
+            trace.seal(
+                TRACES / f"{record.trace_id}.anchor.json",
+                hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
+                ed25519_private_key=TRACE_ED25519_KEY,
+            )
+            recorded.append(record.id)
+        except Exception:  # noqa: BLE001 - one bad trace must not break startup
+            continue
+    return recorded
+
+
 def _requeue_queued_tasks() -> dict[str, Any]:
     """Re-dispatch only queued tasks after restart; active work is never re-run."""
     summary: dict[str, Any] = {"requeued": [], "cancelled": [], "skipped": []}
@@ -552,6 +581,10 @@ def _reap_stale_sandboxes() -> None:
             threading.Thread(target=_reaper_loop, name="orphan-reaper", daemon=True).start()
         try:
             _requeue_queued_tasks()
+        except Exception:  # noqa: BLE001 - do not block startup
+            pass
+        try:
+            _record_interrupted_events()
         except Exception:  # noqa: BLE001 - do not block startup
             pass
         return

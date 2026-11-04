@@ -34,6 +34,8 @@ def _infer_status(events: list[dict[str, Any]]) -> str:
         return "failed"
     if "task.cancelled" in kinds:
         return "cancelled"
+    if "task.interrupted" in kinds:
+        return "interrupted"
     return "running"
 
 
@@ -242,11 +244,12 @@ def verify_bundle_dict(
     result["metadata_ok"] = True
 
     kinds = [event.get("event") for event in events]
-    terminal_kinds = [k for k in ("task.completed", "task.failed", "task.cancelled")
+    terminal_kinds = [k for k in ("task.completed", "task.failed", "task.cancelled",
+                                  "task.interrupted")
                       if k in kinds]
     if len(terminal_kinds) > 1:
         return _fail(result, "FAILED", "ambiguous_terminal_events")
-    if inferred_status in ("completed", "failed", "cancelled"):
+    if inferred_status in ("completed", "failed", "cancelled", "interrupted"):
         expected_terminal = "task." + inferred_status
         if expected_terminal not in kinds:
             return _fail(result, "INCOMPLETE", "missing_terminal_event")
@@ -261,42 +264,53 @@ def verify_bundle_dict(
             }
         )
         return result
-    if last != "sandbox.destroy.confirmed":
+    interrupted_without_cleanup = (
+        inferred_status == "interrupted" and last == "task.interrupted"
+    )
+    if last != "sandbox.destroy.confirmed" and not interrupted_without_cleanup:
         return _fail(result, "INCOMPLETE", "missing_confirmed_cleanup")
 
     expected_sandbox = _sandbox_from_events(events)
     sandbox = bundle.get("sandbox") or {}
     required = ("runtime", "container_id", "image_id")
-    if any(not expected_sandbox.get(key) for key in required):
-        return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
-    if any(not sandbox.get(key) for key in required):
-        return _fail(result, "INCOMPLETE", "missing_bundle_sandbox_fields")
-    mismatched = [
-        key for key in required if sandbox.get(key) != expected_sandbox.get(key)
-    ]
-    if mismatched:
-        return _fail(
-            result,
-            "FAILED",
-            "sandbox_metadata_mismatch:" + ",".join(mismatched),
-        )
-    for key in ("backend", "limits"):
-        if key in sandbox and sandbox.get(key) != expected_sandbox.get(key):
-            return _fail(result, "FAILED", f"sandbox_{key}_mismatch")
-    result["sandbox_ok"] = True
+    if not any(e.get("event") == "sandbox.created" for e in events):
+        if inferred_status != "interrupted":
+            return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
+        result["sandbox_ok"] = True
+    else:
+        if any(not expected_sandbox.get(key) for key in required):
+            return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
+        if any(not sandbox.get(key) for key in required):
+            return _fail(result, "INCOMPLETE", "missing_bundle_sandbox_fields")
+        mismatched = [
+            key for key in required if sandbox.get(key) != expected_sandbox.get(key)
+        ]
+        if mismatched:
+            return _fail(
+                result,
+                "FAILED",
+                "sandbox_metadata_mismatch:" + ",".join(mismatched),
+            )
+        for key in ("backend", "limits"):
+            if key in sandbox and sandbox.get(key) != expected_sandbox.get(key):
+                return _fail(result, "FAILED", f"sandbox_{key}_mismatch")
+        result["sandbox_ok"] = True
 
     raw_cleanup = events[-1].get("payload") or {}
     lifecycle = bundle.get("lifecycle") or {}
-    bundle_cleanup = lifecycle.get("destroy")
-    if not bundle_cleanup:
-        return _fail(result, "INCOMPLETE", "missing_bundle_cleanup")
-    if bundle_cleanup != raw_cleanup:
-        return _fail(result, "FAILED", "cleanup_metadata_mismatch")
-    expected_confirmed = bool((raw_cleanup.get("cleanup") or {}).get("verified"))
-    if lifecycle.get("confirmed") is not expected_confirmed:
-        return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
-    if not expected_confirmed:
-        return _fail(result, "INCOMPLETE", "cleanup_not_confirmed")
+    if interrupted_without_cleanup:
+        result["cleanup_ok"] = None
+    else:
+        bundle_cleanup = lifecycle.get("destroy")
+        if not bundle_cleanup:
+            return _fail(result, "INCOMPLETE", "missing_bundle_cleanup")
+        if bundle_cleanup != raw_cleanup:
+            return _fail(result, "FAILED", "cleanup_metadata_mismatch")
+        expected_confirmed = bool((raw_cleanup.get("cleanup") or {}).get("verified"))
+        if lifecycle.get("confirmed") is not expected_confirmed:
+            return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
+        if not expected_confirmed:
+            return _fail(result, "INCOMPLETE", "cleanup_not_confirmed")
 
     policy = (bundle.get("policy") or {}).get("decisions")
     expected_policy = _policy_from_events(events)
@@ -329,7 +343,7 @@ def verify_bundle_dict(
     if not expected_execution:
         # A task cancelled before its first command legitimately has no exec
         # records. That is not missing evidence; it is the recorded outcome.
-        if inferred_status != "cancelled":
+        if inferred_status not in ("cancelled", "interrupted"):
             return _fail(result, "INCOMPLETE", "missing_raw_execution_results")
         if execution:
             return _fail(result, "FAILED", "execution_metadata_mismatch")

@@ -37,6 +37,7 @@ EVENT_TYPES = {
     "task.completed",
     "task.failed",
     "task.cancelled",
+    "task.interrupted",
 }
 
 
