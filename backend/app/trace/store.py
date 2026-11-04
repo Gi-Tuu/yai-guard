@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -326,7 +327,14 @@ class TraceStore:
                 canonical_json(payload).encode("utf-8"),
                 hashlib.sha256,
             ).hexdigest()
-        Path(anchor_path).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        target = Path(anchor_path)
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, target)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
         return payload
 
     # ---------------------------------------------------------------- resume

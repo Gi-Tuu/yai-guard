@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 from typing import Any
 
@@ -41,7 +42,7 @@ except Exception as exc:  # noqa: BLE001 - 启动失败要作为状态暴露，�
 
 
 def _auth(token: str | None) -> None:
-    if not _TOKEN or token != _TOKEN:
+    if not _TOKEN or not token or not secrets.compare_digest(token, _TOKEN):
         raise HTTPException(status_code=401, detail="invalid sandbox token")
 
 
