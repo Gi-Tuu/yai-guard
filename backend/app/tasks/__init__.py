@@ -1,4 +1,4 @@
-"""Durable task runtime primitives (WP1). Not wired into the API yet."""
+"""Durable task runtime primitives (WP1/WP2). Not enabled by default."""
 
 from .models import (
     ALLOWED_TRANSITIONS,
@@ -9,6 +9,7 @@ from .models import (
     can_transition,
     is_terminal,
 )
+from .service import TaskService
 from .store import (
     SCHEMA_VERSION,
     TaskAlreadyExists,
@@ -24,6 +25,7 @@ __all__ = [
     "TaskAlreadyExists",
     "TaskNotFound",
     "TaskRecord",
+    "TaskService",
     "TaskStatus",
     "TaskStore",
     "can_transition",

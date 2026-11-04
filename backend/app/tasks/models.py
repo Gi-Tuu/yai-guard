@@ -30,7 +30,8 @@ TERMINAL_STATUSES = frozenset({
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.QUEUED: frozenset({
-        TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.INTERRUPTED,
+        TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.CANCELLED,
+        TaskStatus.INTERRUPTED,
     }),
     TaskStatus.RUNNING: frozenset({
         TaskStatus.WAITING_APPROVAL, TaskStatus.COMPLETED, TaskStatus.FAILED,
