@@ -348,6 +348,26 @@ class ApiSecurityTest(unittest.TestCase):
         finally:
             api.POLICY.approval_ttl = old_ttl
 
+    def test_task_deadline_wakes_approval_wait(self) -> None:
+        from app.agent.mock_model import MockModel
+
+        old_ttl = api.POLICY.approval_ttl
+        old_timeout = api.POLICY.limits.get("task_timeout_s")
+        api.POLICY.approval_ttl = 10
+        api.POLICY.limits["task_timeout_s"] = 1
+        try:
+            with mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+                created = self.client.post(
+                    "/api/tasks", json={"task": "deadline while waiting"}, headers=TOKEN_A
+                ).json()
+                final = _wait(self.client, created["task_id"], TOKEN_A, timeout_s=6)
+                self.assertEqual(final["status"], "failed")
+                self.assertIn("task_timeout", final["error"] or "")
+        finally:
+            api.POLICY.approval_ttl = old_ttl
+            if old_timeout is not None:
+                api.POLICY.limits["task_timeout_s"] = old_timeout
+
     # --------------------------------------------------------------- trace
     def test_trace_tamper_is_detected(self) -> None:
         created = self.client.post("/api/tasks", json={"task": "ls /workspace"},
