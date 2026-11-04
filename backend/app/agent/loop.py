@@ -40,9 +40,9 @@ def _wrap_output(result: dict[str, Any]) -> str:
 
 
 def _validate_claims(
-    claims: Any, exec_seqs: list[int], *, required: bool
+    claims: Any, exec_evidence: dict[int, dict[str, Any]], *, required: bool
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """每条 claim 必须引用真实 sandbox.exec 事件的 seq；空/无效引用一律拒绝。"""
+    """每条 claim 必须引用真实 sandbox.exec 的 seq + argv + stdout 摘要。"""
     if claims is None:
         if required:
             return [], "claims are required when a command was executed"
@@ -59,10 +59,23 @@ def _validate_claims(
         seq = claim.get("evidence_seq")
         if not text:
             return [], f"claim[{index}].text must be non-empty"
-        if not isinstance(seq, int) or seq not in exec_seqs:
+        if not isinstance(seq, int) or seq not in exec_evidence:
             return [], (f"claim[{index}].evidence_seq={seq!r} is not a real sandbox.exec seq; "
-                        f"available={exec_seqs}")
-        validated.append({"text": text, "evidence_seq": seq})
+                        f"available={sorted(exec_evidence)}")
+        expected = exec_evidence[seq]
+        argv = claim.get("evidence_argv")
+        stdout_sha = claim.get("evidence_stdout_sha256")
+        if argv != expected["argv"]:
+            return [], (f"claim[{index}].evidence_argv does not match seq {seq}; "
+                        f"expected={expected['argv']!r}")
+        if stdout_sha != expected["stdout_sha256"]:
+            return [], (f"claim[{index}].evidence_stdout_sha256 does not match seq {seq}")
+        validated.append({
+            "text": text,
+            "evidence_seq": seq,
+            "evidence_argv": argv,
+            "evidence_stdout_sha256": stdout_sha,
+        })
     return validated, None
 
 
@@ -111,6 +124,7 @@ def run_agent(
 
     step = 0
     exec_seqs: list[int] = []
+    exec_evidence: dict[int, dict[str, Any]] = {}
     run_result: RunResult | None = None
     try:
         sandbox.create(task_id, _limits_from(policy))
@@ -236,6 +250,11 @@ def run_agent(
                     }, execution={**exec_meta, "argv": argv, "cwd": cwd,
                                   "host_before": host_before, "host_after": host_after})
                     exec_seqs.append(exec_event["seq"])
+                    exec_evidence[exec_event["seq"]] = {
+                        "argv": argv,
+                        "stdout_sha256": exec_meta.get("stdout_sha256"),
+                        "stderr_sha256": exec_meta.get("stderr_sha256"),
+                    }
                     result["evidence_seq"] = exec_event["seq"]
                     killed = exec_meta.get("killed_reason")
                     if killed:
@@ -256,7 +275,7 @@ def run_agent(
                 elif call.name == "finish":
                     claims, claim_error = _validate_claims(
                         call.arguments.get("claims"),
-                        exec_seqs,
+                        exec_evidence,
                         required=require_claims and bool(exec_seqs),
                     )
                     if claim_error:
@@ -264,8 +283,11 @@ def run_agent(
                                          "content": _wrap_output({
                                              "ok": False,
                                              "error": "finish rejected: " + claim_error,
-                                             "available_evidence_seqs": exec_seqs,
-                                             "hint": "call finish again with claims citing a real evidence_seq",
+                                             "available_evidence": [
+                                                 {"evidence_seq": seq, **meta}
+                                                 for seq, meta in sorted(exec_evidence.items())
+                                             ],
+                                             "hint": "call finish again with claims citing a real evidence_seq, its evidence_argv and evidence_stdout_sha256",
                                          })})
                         continue
                     record(actor="agent", event="task.completed", payload={
@@ -274,6 +296,7 @@ def run_agent(
                         "claims": claims,
                         "claims_verified": bool(claims),
                         "claims_required": bool(require_claims and exec_seqs),
+                        "claim_binding": "argv+sha256",
                     })
                     run_result = RunResult(
                         "completed",

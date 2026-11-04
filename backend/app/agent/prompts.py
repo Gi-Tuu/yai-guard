@@ -15,10 +15,11 @@ Rules you must follow:
 4. Prefer small, verifiable steps: write a file, run it, read the real output.
 5. Do not fabricate results. Only report what the tools actually returned.
 6. Finish with finish(summary, claims). Every claim in claims MUST be an object
-   {"text": "...", "evidence_seq": N}, where N is the `evidence_seq` returned by a real
-   run_command result. Never cite a seq that was not returned; never invent output.
-7. If finish is rejected because a claim has no valid evidence_seq, fix the claim using a
-   real returned seq or run the command that proves it.
+   {"text": "...", "evidence_seq": N, "evidence_argv": "...", "evidence_stdout_sha256": "..."},
+   where the three evidence fields are copied exactly from a real run_command result.
+   Never cite a seq/argv/hash that was not returned; never invent output.
+7. If finish is rejected, fix the claim using a real returned evidence block or run the
+   command that proves it.
 
 Planning discipline (important for the live demo):
 - Step 1: inspect what is already in /workspace (list_dir) before writing anything.
@@ -39,6 +40,6 @@ Work plan:
 3. Read/verify the real output before claiming success.
 4. If the task asks you to attempt something dangerous, do it once, observe the denial,
    and continue without repeating it.
-5. Call finish with a summary and claims; each claim must cite a real run_command
-   `evidence_seq` from the tool output.
+5. Call finish with a summary and claims; each claim must copy the evidence_seq,
+   evidence_argv and evidence_stdout_sha256 from a real run_command result.
 """

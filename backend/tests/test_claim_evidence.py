@@ -17,20 +17,23 @@ from app.sandbox.fake_backend import FakeSandbox  # noqa: E402
 from app.trace import TraceStore  # noqa: E402
 
 
-def _last_evidence_seq(messages: list[dict]) -> int:
+def _last_evidence(messages: list[dict]) -> dict:
     for message in reversed(messages):
         text = message.get("content", "")
-        match = re.search(r'"evidence_seq"\s*:\s*(\d+)', text)
-        if match:
-            return int(match.group(1))
-        match = re.search(r"Available evidence_seq:\s*(\d+)", text)
-        if match:
-            return int(match.group(1))
-    raise AssertionError("no evidence_seq in conversation: " + repr(messages[-1])[:300])
+        match = re.search(r"<sandbox_output>\s*(\{.*?\})\s*</sandbox_output>", text, re.S)
+        if not match:
+            continue
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if "evidence_seq" in data:
+            return data
+    raise AssertionError("no evidence block in conversation: " + repr(messages[-1])[:300])
 
 
 class ClaimModel:
-    """先跑一条命令，再读取 tool 输出里的 evidence_seq 完成。"""
+    """先跑一条命令，再读取 tool 输出里的 evidence 完成。"""
 
     def __init__(self) -> None:
         self.step = 0
@@ -43,12 +46,17 @@ class ClaimModel:
                 tool_calls=[ToolCall("c1", "run_command", {"command": "echo hi"})],
                 finish_reason="tool_calls",
             )
-        seq = _last_evidence_seq(messages)
+        evidence = _last_evidence(messages)
         return ModelResponse(
             content="finished",
             tool_calls=[ToolCall("c2", "finish", {
                 "summary": "echo ran with evidence",
-                "claims": [{"text": "echo exited 0", "evidence_seq": seq}],
+                "claims": [{
+                    "text": "echo exited 0",
+                    "evidence_seq": evidence["evidence_seq"],
+                    "evidence_argv": evidence["evidence_argv"],
+                    "evidence_stdout_sha256": evidence["evidence_stdout_sha256"],
+                }],
             })],
             finish_reason="tool_calls",
         )
@@ -67,7 +75,12 @@ class InvalidClaimModel(ClaimModel):
             content="finish with fake evidence",
             tool_calls=[ToolCall("c2", "finish", {
                 "summary": "claim without evidence",
-                "claims": [{"text": "echo exited 0", "evidence_seq": 999999}],
+                "claims": [{
+                    "text": "echo exited 0",
+                    "evidence_seq": 999999,
+                    "evidence_argv": "echo hi",
+                    "evidence_stdout_sha256": "0" * 64,
+                }],
             })],
             finish_reason="tool_calls",
         )
@@ -122,12 +135,17 @@ class CorrectionModel(ClaimModel):
             )
         if self.step == 2:
             return ModelResponse(content="finished without claims", finish_reason="stop")
-        seq = _last_evidence_seq(messages)
+        evidence = _last_evidence(messages)
         return ModelResponse(
             content="finished after correction",
             tool_calls=[ToolCall("c2", "finish", {
                 "summary": "echo ran with evidence",
-                "claims": [{"text": "echo exited 0", "evidence_seq": seq}],
+                "claims": [{
+                    "text": "echo exited 0",
+                    "evidence_seq": evidence["evidence_seq"],
+                    "evidence_argv": evidence["evidence_argv"],
+                    "evidence_stdout_sha256": evidence["evidence_stdout_sha256"],
+                }],
             })],
             finish_reason="tool_calls",
         )

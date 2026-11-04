@@ -75,7 +75,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "finish",
             "description": "Finish the task with a summary and claims. Every claim must cite the "
-                           "evidence_seq returned by a real run_command call.",
+                           "evidence_seq, evidence_argv and evidence_stdout_sha256 returned by a "
+                           "real run_command call.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -87,8 +88,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "properties": {
                                 "text": {"type": "string"},
                                 "evidence_seq": {"type": "integer"},
+                                "evidence_argv": {"type": "string"},
+                                "evidence_stdout_sha256": {"type": "string"},
                             },
-                            "required": ["text", "evidence_seq"],
+                            "required": ["text", "evidence_seq", "evidence_argv",
+                                         "evidence_stdout_sha256"],
                             "additionalProperties": False,
                         },
                     },
@@ -130,14 +134,20 @@ def execute_tool(
         # The model must not be able to bypass the policy wall-clock cap.
         timeout = max(1, min(requested_timeout, max(1, max_command_timeout)))
         result = sandbox.exec(task_id, command, timeout_s=timeout, cwd=workspace)
+        exec_meta = result.to_exec_dict()
         return {
             "ok": result.exit_code == 0 and not result.timed_out,
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "stdout": result.stdout[:max_output_bytes],
             "stderr": result.stderr[:max_output_bytes],
+            # Claims must cite these fields; they bind a claim to the exact
+            # command and output digest of the execution it references.
+            "evidence_argv": command,
+            "evidence_stdout_sha256": exec_meta["stdout_sha256"],
+            "evidence_stderr_sha256": exec_meta["stderr_sha256"],
             # 供 trace 使用，回灌模型前会被 loop 移除
-            "_exec": result.to_exec_dict(),
+            "_exec": exec_meta,
             "_argv": command,
             "_cwd": workspace,
         }
