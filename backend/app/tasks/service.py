@@ -74,18 +74,31 @@ class TaskService:
             return None
         try:
             record = self.store.get_task(task_id)
-            if record is None:
+            if record is None or record.status is not TaskStatus.QUEUED:
+                # Claim exactly once. Returning None prevents a second dispatcher
+                # from running the same task concurrently.
                 return None
-            if record.status is TaskStatus.QUEUED:
-                return self.store.transition(
-                    task_id, TaskStatus.RUNNING,
-                    started_at=time.time(), worker_id=worker_id,
-                    lease_until=time.time() + lease_seconds,
-                )
-            return record
+            return self.store.transition(
+                task_id, TaskStatus.RUNNING,
+                started_at=time.time(), worker_id=worker_id,
+                lease_until=time.time() + lease_seconds,
+                expected_version=record.version,
+            )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return None
+
+    def heartbeat(self, task_id: str, *, worker_id: str = "app",
+                  lease_seconds: float = 60.0) -> bool:
+        if self.store is None:
+            return False
+        try:
+            return self.store.heartbeat(
+                task_id, worker_id=worker_id, lease_seconds=lease_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return False
 
     def request_cancel(self, task_id: str) -> bool:
         if self.store is None:

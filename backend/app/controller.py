@@ -33,7 +33,9 @@ _BACKENDS: dict[str, DockerSandbox] = {}
 # 绝不静默把 runsc 降级成 runc（P1-6）。
 try:
     _STARTUP: dict[str, Any] = {"ok": True, **_backend.ensure_ready()}
-    _STARTUP["reaped"] = _backend.reap_orphans()
+    # Do not clear all sandbox containers here: the app may still be running
+    # and owning active tasks. The app-side reaper owns task-aware cleanup.
+    _STARTUP["reaped"] = []
 except Exception as exc:  # noqa: BLE001 - 启动失败要作为状态暴露，而不是 crash loop
     _STARTUP = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -199,10 +201,16 @@ def destroy(task_id: str,
     with _BACKEND_LOCK:
         backend = _BACKENDS.get(task_id)
     if backend is None:
-        # Idempotent destroy: a retry after a successful teardown must not
-        # turn into a task failure.
-        return {"ok": True, "verified": True, "container": f"yaig-{task_id}",
-                "already_gone": True}
+        # A controller restart loses _BACKENDS but the container may still
+        # exist. Remove by name and verify instead of claiming already_gone.
+        result = _backend.remove_orphan(task_id)
+        if not result.get("verified"):
+            raise HTTPException(status_code=500, detail={
+                "error": "container destroy could not be verified", "result": result,
+            })
+        with _BACKEND_LOCK:
+            _BACKENDS.pop(task_id, None)
+        return {"ok": True, **result}
     result = backend.destroy(task_id)
     if not result.get("verified"):
         raise HTTPException(status_code=500, detail={

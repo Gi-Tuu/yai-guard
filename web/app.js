@@ -221,6 +221,7 @@
     row.className = 'ev';
     if (type === 'sandbox.exec') row.classList.add('exec');
     if (type === 'task.completed') row.classList.add('done');
+    if (type === 'task.cancelled' || type === 'task.interrupted') row.classList.add('done');
     if (type === 'sandbox.created' || type === 'sandbox.destroyed' || type === 'resource.limit') row.classList.add('system');
     if (!payload.step) row.classList.add('system');
 

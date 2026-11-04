@@ -154,6 +154,23 @@ def _require_principal(x_demo_token: str | None = Header(default=None)) -> str:
     raise HTTPException(status_code=401, detail="missing or invalid X-Demo-Token")
 
 
+def _configured_admin_tokens() -> set[str]:
+    raw = os.environ.get("ADMIN_TOKENS") or os.environ.get("ADMIN_TOKEN") or ""
+    return {token.strip() for token in raw.split(",") if token.strip()}
+
+
+def _require_admin(x_demo_token: str | None = Header(default=None)) -> str:
+    """Destructive maintenance routes require an explicit admin token."""
+    admins = _configured_admin_tokens()
+    if not admins:
+        raise HTTPException(status_code=503, detail="admin actions are not configured")
+    if x_demo_token:
+        for token in admins:
+            if secrets.compare_digest(x_demo_token, token):
+                return "admin"
+    raise HTTPException(status_code=403, detail="admin token required")
+
+
 def _prune_tasks() -> None:
     """Drop old terminal task state so repeated demo runs do not grow forever.
 
@@ -165,7 +182,7 @@ def _prune_tasks() -> None:
         stale = [
             task_id
             for task_id, state in TASKS.items()
-            if state.status in ("completed", "failed")
+            if state.status in ("completed", "failed", "cancelled", "interrupted")
             and now - state.created_at > TASK_STATE_TTL_S
         ]
         for task_id in stale:
@@ -370,11 +387,36 @@ def _run_task(state: TaskState) -> None:
     final_summary = ""
     final_error: str | None = None
     deadline_timer: threading.Timer | None = None
-    with _DISPATCH_LOCK:
-        _DISPATCHED_QUEUED.discard(state.task_id)
+    heartbeat_stop: threading.Event | None = None
     _release_queue_slot()
     _EXEC_SLOTS.acquire()
+    if TASK_SERVICE.enabled:
+        record = TASK_SERVICE.get_record(state.task_id)
+        if record is None or record.status is not TaskStatus.QUEUED:
+            with _DISPATCH_LOCK:
+                _DISPATCHED_QUEUED.discard(state.task_id)
+            _release_exec_slot()
+            return
+        started = TASK_SERVICE.mark_running(state.task_id, worker_id="app")
+        if started is None:
+            with _DISPATCH_LOCK:
+                _DISPATCHED_QUEUED.discard(state.task_id)
+            _release_exec_slot()
+            return
+    with _DISPATCH_LOCK:
+        _DISPATCHED_QUEUED.discard(state.task_id)
     try:
+        state.status = "running"
+        heartbeat_stop = threading.Event()
+
+        def _heartbeat() -> None:
+            while not heartbeat_stop.wait(20):
+                TASK_SERVICE.heartbeat(state.task_id, worker_id="app", lease_seconds=60)
+
+        if TASK_SERVICE.enabled:
+            threading.Thread(target=_heartbeat, name=f"heartbeat-{state.task_id}",
+                             daemon=True).start()
+        deadline_timer = None
         task_timeout_s = int(POLICY.limits.get("task_timeout_s", 900))
         state.deadline_at = time.monotonic() + task_timeout_s
         # Hard wake at the task deadline: approval waits and slow steps return
@@ -387,7 +429,6 @@ def _run_task(state: TaskState) -> None:
                      payload={"task": state.task})
         state.events.append({"event": "task.created", "payload": {"task": state.task}})
         state.status = "running"
-        TASK_SERVICE.mark_running(state.task_id)
 
         sandbox = _build_sandbox()
         result = run_agent(
@@ -420,6 +461,8 @@ def _run_task(state: TaskState) -> None:
                 except Exception:  # noqa: BLE001
                     pass
     finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
         if deadline_timer is not None:
             deadline_timer.cancel()
         # Seal before publishing the terminal status so readers never see a
@@ -631,8 +674,8 @@ def _reap_stale_sandboxes() -> None:
 
 @app.post("/api/maintenance/reap")
 def maintenance_reap(body: dict[str, Any] | None = None,
-                     principal: str = Depends(_require_principal)) -> dict[str, Any]:
-    """Manual SQLite-aware orphan reaper; dry_run defaults to false."""
+                     admin: str = Depends(_require_admin)) -> dict[str, Any]:
+    """Admin-only SQLite-aware orphan reaper; dry_run defaults to false."""
     data = body or {}
     return _run_orphan_reaper(
         grace_s=float(data.get("grace_s", 60)),
@@ -684,6 +727,8 @@ def create_task(body: dict[str, Any], request: Request,
     task = str(body.get("task", "")).strip()
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
+    if len(task) > int(os.environ.get("TASK_MAX_CHARS", "100000")):
+        raise HTTPException(status_code=413, detail="task is too large")
     _enforce_rate_limit(request)
     _prune_tasks()
 
@@ -701,9 +746,13 @@ def create_task(body: dict[str, Any], request: Request,
     TASK_SERVICE.create(
         task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
     )
+    with _DISPATCH_LOCK:
+        _DISPATCHED_QUEUED.add(task_id)
     try:
         _TASK_EXECUTOR.submit(_run_task, state)
     except Exception:
+        with _DISPATCH_LOCK:
+            _DISPATCHED_QUEUED.discard(task_id)
         _release_queue_slot()
         with _LOCK:
             TASKS.pop(task_id, None)
@@ -716,7 +765,7 @@ def cancel_task(task_id: str,
                 principal: str = Depends(_require_principal)) -> dict[str, Any]:
     """协作取消：设置标志、唤醒审批等待，由 worker 在边界写入 cancelled。"""
     state = _owned_task(task_id, principal)
-    if state.status in ("completed", "failed", "cancelled"):
+    if state.status in ("completed", "failed", "cancelled", "interrupted"):
         raise HTTPException(status_code=409, detail="task is already terminal")
     state.cancel_event.set()
     TASK_SERVICE.request_cancel(task_id)
@@ -750,7 +799,7 @@ def stream_events(task_id: str, principal: str = Depends(_require_principal)) ->
                 with _LOCK:
                     batch = state.events[cursor:]
                     cursor += len(batch)
-                    finished = state.status in ("completed", "failed", "cancelled")
+                    finished = state.status in ("completed", "failed", "cancelled", "interrupted")
                 for event in batch:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if finished and not batch:
@@ -813,7 +862,7 @@ def verify_trace(task_id: str, principal: str = Depends(_require_principal)) -> 
         anchor_path=TRACES / f"{state.trace_id}.anchor.json",
         hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
         public_key=TRACE_ED25519_PUBLIC,
-        strict=state.status in ("completed", "failed", "cancelled"),
+        strict=state.status in ("completed", "failed", "cancelled", "interrupted"),
     )
     return result
 

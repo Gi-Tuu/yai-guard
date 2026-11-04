@@ -267,14 +267,19 @@ def verify_bundle_dict(
     interrupted_without_cleanup = (
         inferred_status == "interrupted" and last == "task.interrupted"
     )
-    if last != "sandbox.destroy.confirmed" and not interrupted_without_cleanup:
+    no_cleanup_required = interrupted_without_cleanup or (
+        inferred_status in ("failed", "cancelled")
+        and "sandbox.created" not in kinds
+        and last == "task." + inferred_status
+    )
+    if last != "sandbox.destroy.confirmed" and not no_cleanup_required:
         return _fail(result, "INCOMPLETE", "missing_confirmed_cleanup")
 
     expected_sandbox = _sandbox_from_events(events)
     sandbox = bundle.get("sandbox") or {}
     required = ("runtime", "container_id", "image_id")
     if not any(e.get("event") == "sandbox.created" for e in events):
-        if inferred_status != "interrupted":
+        if inferred_status not in ("interrupted", "failed", "cancelled"):
             return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
         result["sandbox_ok"] = True
     else:
@@ -298,7 +303,7 @@ def verify_bundle_dict(
 
     raw_cleanup = events[-1].get("payload") or {}
     lifecycle = bundle.get("lifecycle") or {}
-    if interrupted_without_cleanup:
+    if no_cleanup_required:
         result["cleanup_ok"] = None
     else:
         bundle_cleanup = lifecycle.get("destroy")
@@ -343,7 +348,7 @@ def verify_bundle_dict(
     if not expected_execution:
         # A task cancelled before its first command legitimately has no exec
         # records. That is not missing evidence; it is the recorded outcome.
-        if inferred_status not in ("cancelled", "interrupted"):
+        if inferred_status not in ("cancelled", "interrupted", "failed"):
             return _fail(result, "INCOMPLETE", "missing_raw_execution_results")
         if execution:
             return _fail(result, "FAILED", "execution_metadata_mismatch")

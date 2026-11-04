@@ -65,16 +65,11 @@ def reap_orphans(
         elif record.status is TaskStatus.QUEUED:
             reason = "queued_task_has_container"
         elif record.status in (TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL):
-            lease = record.lease_until
-            if lease is not None and lease < now:
-                task_service.finish(
-                    task_id, TaskStatus.INTERRUPTED,
-                    error="lease_expired_reaped",
-                )
-                reason = "lease_expired"
-            else:
-                result["kept"].append({"task_id": task_id, "reason": "active_lease"})
-                continue
+            # A lease can be stale for a moment between heartbeats, and the
+            # app process may be alive. Never kill an active task from the
+            # reaper; startup recovery decides interrupted state after a restart.
+            result["kept"].append({"task_id": task_id, "reason": "active_task"})
+            continue
         else:
             reason = "inactive_task"
 

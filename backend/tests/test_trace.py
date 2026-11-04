@@ -250,5 +250,16 @@ class TraceIntegrityTest(unittest.TestCase):
         self.assertEqual(result["status"], "VERIFIED")
         self.assertIsNone(result["cleanup_ok"])
 
+    def test_strict_failed_before_sandbox_is_verified(self) -> None:
+        store = TraceStore(self.trace, "tr_failed")
+        store.append(task_id="tk", actor="user", event="task.created", payload={})
+        store.append(task_id="tk", actor="system", event="task.failed",
+                     payload={"error": "controller unreachable"})
+        store.seal(self.anchor, hmac_key="k")
+        result = verify_trace_file(self.trace, task_status="failed",
+                                   anchor_path=self.anchor, hmac_key="k", strict=True)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertIsNone(result["cleanup_ok"])
+
 if __name__ == "__main__":
     unittest.main()

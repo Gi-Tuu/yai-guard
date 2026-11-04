@@ -54,6 +54,16 @@ class TaskServiceTest(unittest.TestCase):
         service.finish("tk", TaskStatus.COMPLETED)
         service.close()
 
+    def test_mark_running_is_single_claim_and_heartbeat_extends_lease(self) -> None:
+        service = TaskService.from_path(self.path)
+        service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+        self.assertIsNotNone(service.mark_running("tk"))
+        lease = service.get_record("tk").lease_until
+        self.assertIsNone(service.mark_running("tk"))
+        self.assertTrue(service.heartbeat("tk", worker_id="app", lease_seconds=120))
+        self.assertGreater(service.get_record("tk").lease_until, lease)
+        service.close()
+
     def test_restart_expires_pending_approvals(self) -> None:
         first = TaskService.from_path(self.path)
         first.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
