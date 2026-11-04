@@ -283,11 +283,14 @@ class PolicyEngine:
         )
 
     def _outside_path_arg(self, argv: list[str]) -> str | None:
-        """只读命令的路径参数必须在 /workspace 内（拒绝 /etc、..、~ 等跳界）。"""
+        """Resolve every non-option path argument, including relative traversal.
+
+        Checking only absolute/`..`-prefixed arguments misses
+        `cat foo/../../etc/passwd`: the shell resolves it outside /workspace,
+        but the string itself starts with a normal relative component.
+        """
         for arg in argv[1:]:
             if arg.startswith("-") and arg != "-":
-                continue
-            if not (arg.startswith("/") or arg.startswith("..") or arg.startswith("~")):
                 continue
             try:
                 resolved = normalize_path(arg, self.workspace)

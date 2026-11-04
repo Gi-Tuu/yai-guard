@@ -90,7 +90,8 @@ class AgentLoopTest(unittest.TestCase):
 
         self.sandbox = BadDestroySandbox()
         result = self._run_demo()
-        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error, "cleanup_unverified")
         types = [e["event"] for e in self.trace.read()]
         self.assertIn("sandbox.destroy.unverified", types)
         self.assertNotIn("sandbox.destroy.confirmed", types)

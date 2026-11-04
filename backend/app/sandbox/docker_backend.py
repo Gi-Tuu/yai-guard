@@ -332,16 +332,25 @@ class DockerSandbox:
         script = f"mkdir -p $(dirname {shlex.quote(path)}) && echo {payload} | base64 -d > {shlex.quote(path)}"
         self._run([self.docker_bin, "exec", "-i", f"yaig-{task_id}", "sh", "-c", script], input_text=None)
 
-    def get_file(self, task_id: str, path: str, *, max_bytes: int = 1_048_576) -> bytes:
-        out = self._run(
-            [self.docker_bin, "exec", f"yaig-{task_id}", "sh", "-c",
-             f"base64 -w0 {shlex.quote(path)} 2>/dev/null | head -c {max_bytes * 2}"],
-            input_text=None,
-        )
+    def get_file(self, task_id: str, path: str, *, max_bytes: int = 1_048_576,
+                 allow_missing: bool = True) -> bytes:
+        try:
+            out = self._run(
+                [self.docker_bin, "exec", f"yaig-{task_id}", "sh", "-c",
+                 f"base64 -w0 {shlex.quote(path)} | head -c {max_bytes * 2}"],
+                input_text=None,
+                allow_missing=allow_missing,
+            )
+        except DockerError:
+            if allow_missing:
+                return b""
+            raise
         try:
             return base64.b64decode(out.stdout.encode("ascii"))
-        except Exception:
-            return b""
+        except Exception as exc:
+            if allow_missing:
+                return b""
+            raise DockerError(f"invalid base64 while reading {path}: {exc}") from exc
 
     def list_files(self, task_id: str, path: str = "/workspace") -> list[str]:
         out = self._run([self.docker_bin, "exec", f"yaig-{task_id}", "sh", "-c",
@@ -392,11 +401,13 @@ class DockerSandbox:
         return collect_host_snapshot()
 
     # ---------------------------------------------------------------- helpers
-    def _run(self, args: list[str], input_text: str | None = None) -> subprocess.CompletedProcess:
+    def _run(self, args: list[str], input_text: str | None = None, *,
+             allow_missing: bool = True) -> subprocess.CompletedProcess:
         result = subprocess.run(args, capture_output=True, text=True, timeout=60,
                                 input=input_text)
-        if result.returncode != 0 and "No such file" not in result.stderr:
-            # 读取不存在文件是正常路径，其它错误向上抛
+        if result.returncode != 0:
+            if allow_missing and "No such file" in result.stderr:
+                return result
             raise DockerError(result.stderr.strip()[:400])
         return result
 

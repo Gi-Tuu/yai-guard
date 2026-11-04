@@ -117,7 +117,7 @@ class TraceIntegrityTest(unittest.TestCase):
         store.append(task_id="tk", actor="system", event="task.created", payload={})
         if completed:
             store.append(task_id="tk", actor="agent", event="task.completed", payload={})
-        store.append(task_id="tk", actor="system", event="sandbox.destroyed", payload={})
+        store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed", payload={})
         if anchor:
             store.seal(self.anchor, hmac_key=hmac_key)
         return store
@@ -217,6 +217,16 @@ class TraceIntegrityTest(unittest.TestCase):
         self.assertEqual(result["status"], "VERIFIED")
         self.assertTrue(result["ok"])
 
+
+    def test_strict_destroyed_without_confirmation_is_incomplete(self) -> None:
+        store = TraceStore(self.trace, "tr_legacy")
+        store.append(task_id="tk", actor="system", event="task.created", payload={})
+        store.append(task_id="tk", actor="agent", event="task.completed", payload={})
+        store.append(task_id="tk", actor="system", event="sandbox.destroyed", payload={})
+        store.seal(self.anchor, hmac_key="k")
+        result = verify_trace_file(self.trace, task_status="completed",
+                                   anchor_path=self.anchor, hmac_key="k", strict=True)
+        self.assertEqual(result["status"], "INCOMPLETE")
 
 if __name__ == "__main__":
     unittest.main()

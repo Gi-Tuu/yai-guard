@@ -31,7 +31,7 @@ from typing import Any
 
 try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
-    from fastapi.responses import FileResponse, StreamingResponse
+    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("fastapi is required to run the API") from exc
 
@@ -84,6 +84,7 @@ _RATE_LOCK = threading.Lock()
 _RATE_HITS: dict[str, list[float]] = {}
 RATE_WINDOW_S = 60.0
 _MISSING = object()
+TASK_STATE_TTL_S = int(os.environ.get("TASK_STATE_TTL_S", "3600"))
 
 
 def _configured_tokens() -> set[str]:
@@ -114,6 +115,24 @@ def _require_principal(x_demo_token: str | None = Header(default=None)) -> str:
     raise HTTPException(status_code=401, detail="missing or invalid X-Demo-Token")
 
 
+def _prune_tasks() -> None:
+    """Drop old terminal task state so repeated demo runs do not grow forever.
+
+    Trace/evidence files are intentionally retained; this only bounds the
+    in-memory TASKS map.
+    """
+    now = time.time()
+    with _LOCK:
+        stale = [
+            task_id
+            for task_id, state in TASKS.items()
+            if state.status in ("completed", "failed")
+            and now - state.created_at > TASK_STATE_TTL_S
+        ]
+        for task_id in stale:
+            TASKS.pop(task_id, None)
+
+
 def _owned_task(task_id: str, principal: str) -> TaskState:
     """任务不存在与无权访问都返回 404，避免通过状态码枚举别人的任务。"""
     state = TASKS.get(task_id)
@@ -133,12 +152,29 @@ def _rate_limit_per_min() -> int:
         return 10
 
 
+def _client_ip(request: Request) -> str:
+    """Resolve the real client behind Caddy without trusting arbitrary headers.
+
+    The app only listens on loopback and Caddy is the sole ingress, so the
+    first X-Forwarded-For entry is the browser IP. Direct local calls without
+    the header fall back to request.client.host.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        # Caddy appends the real peer to an existing X-Forwarded-For value, so
+        # the last hop is the one we cannot spoof from the browser.
+        last = forwarded.split(",")[-1].strip()
+        if last:
+            return last
+    return request.client.host if request.client else "unknown"
+
+
 def _enforce_rate_limit(request: Request) -> None:
     """每 IP 令牌桶（滑动窗口）。<=0 表示关闭，仅内部/测试使用。"""
     limit = _rate_limit_per_min()
     if limit <= 0:
         return
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request)
     now = time.monotonic()
     with _RATE_LOCK:
         hits = [t for t in _RATE_HITS.get(ip, []) if now - t < RATE_WINDOW_S]
@@ -206,11 +242,17 @@ def _approver(task_id: str, owner: str):
 
 # ---------------------------------------------------------------- task runner
 def _run_task(state: TaskState) -> None:
-    trace = TraceStore(TRACES / f"{state.trace_id}.jsonl", state.trace_id)
+    """Run one task while guaranteeing slot release and a terminal state.
+
+    TraceStore construction itself can fail (disk full, unwritable artifact
+    directory, corrupt trace). It must not leave the global demo slot acquired.
+    """
+    trace: TraceStore | None = None
     final_status = "failed"
     final_summary = ""
     final_error: str | None = None
     try:
+        trace = TraceStore(TRACES / f"{state.trace_id}.jsonl", state.trace_id)
         trace.append(task_id=state.task_id, actor="user", event="task.created",
                      payload={"task": state.task})
         state.events.append({"event": "task.created", "payload": {"task": state.task}})
@@ -231,40 +273,91 @@ def _run_task(state: TaskState) -> None:
         final_status = result.status
         final_summary = result.summary
         final_error = result.error
-    except Exception as exc:  # noqa: BLE001 - 任何失败都要落到任务状态与审计
+    except Exception as exc:  # noqa: BLE001 - any failure must become task state + trace
         final_status = "failed"
         final_error = f"{type(exc).__name__}: {exc}"
-        try:
-            already = any(ev.get("event") == "task.failed" for ev in trace.read())
-        except Exception:  # noqa: BLE001
-            already = False
-        if not already:
+        if trace is not None:
             try:
-                trace.append(task_id=state.task_id, actor="system", event="task.failed",
-                             payload={"error": final_error})
+                already = any(ev.get("event") == "task.failed" for ev in trace.read())
             except Exception:  # noqa: BLE001
-                pass
+                already = False
+            if not already:
+                try:
+                    trace.append(task_id=state.task_id, actor="system", event="task.failed",
+                                 payload={"error": final_error})
+                except Exception:  # noqa: BLE001
+                    pass
     finally:
-        # 先写锚点，再把任务标记为终态：避免客户端在 anchor 尚未落盘时读到 completed。
-        try:
-            trace.seal(TRACES / f"{state.trace_id}.anchor.json",
-                       hmac_key=os.environ.get("TRACE_HMAC_KEY") or None)
-        except Exception as exc:  # noqa: BLE001 - 锚点失败不掩盖任务结果，但要在状态里可见
-            final_error = final_error or f"anchor_seal_failed: {type(exc).__name__}: {exc}"
+        # Seal before publishing the terminal status so readers never see a
+        # completed task whose anchor was still missing.
+        if trace is not None:
+            try:
+                trace.seal(TRACES / f"{state.trace_id}.anchor.json",
+                           hmac_key=os.environ.get("TRACE_HMAC_KEY") or None)
+            except Exception as exc:  # noqa: BLE001 - surface in state, do not crash
+                final_status = "failed"
+                final_error = final_error or f"anchor_seal_failed: {type(exc).__name__}: {exc}"
         state.status = final_status
         state.summary = final_summary
         state.error = final_error
         try:
             _TASK_SLOT.release()
-        except ValueError:  # pragma: no cover - 只有异常路径可能重复释放
+        except ValueError:  # pragma: no cover - only a defensive double release
             pass
 
 
 # ---------------------------------------------------------------------- routes
+def _sandbox_health() -> dict[str, Any]:
+    driver = os.environ.get("SANDBOX_DRIVER", "fake")
+    if driver == "fake":
+        return {"ok": True, "backend": "fake"}
+    if driver == "remote":
+        from app.sandbox.remote_backend import RemoteSandbox
+
+        payload = RemoteSandbox(
+            os.environ.get("SANDBOX_BASE_URL", "http://127.0.0.1:9000"),
+            os.environ.get("SANDBOX_TOKEN", ""),
+            timeout_s=3.0,
+        ).host_fingerprint()
+        return {"ok": payload.get("ok") is True, "backend": "remote",
+                "runtime": payload.get("runtime"), "error": payload.get("error")}
+    if driver == "docker":
+        from app.sandbox.docker_backend import DockerSandbox
+
+        status = DockerSandbox(runtime=os.environ.get("SANDBOX_RUNTIME") or None).daemon_status()
+        return {"ok": bool(status.get("ok")), "backend": "docker",
+                "version": status.get("version"), "error": status.get("error")}
+    return {"ok": False, "backend": driver, "error": "unknown sandbox driver"}
+
+
+def _trace_health() -> tuple[bool, str | None]:
+    try:
+        TRACES.mkdir(parents=True, exist_ok=True)
+        if not os.access(TRACES, os.W_OK):
+            return False, "trace directory is not writable"
+        return True, None
+    except OSError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 @app.get("/healthz")
-def healthz() -> dict[str, Any]:
-    ok, bad = True, None
-    return {"ok": ok, "version": "0.1.0", "trace_ok": ok, "trace_bad": bad}
+def healthz() -> JSONResponse:
+    sandbox = _sandbox_health()
+    trace_ok, trace_error = _trace_health()
+    model_ok = (
+        os.environ.get("MOCK_MODEL", "0") == "1"
+        or bool(os.environ.get("VULTR_INFERENCE_API_KEY"))
+    )
+    ok = bool(sandbox.get("ok")) and trace_ok and model_ok
+    payload = {
+        "ok": ok,
+        "version": "0.1.0",
+        "trace_ok": trace_ok,
+        "trace_bad": trace_error,
+        "sandbox": sandbox,
+        "model_configured": model_ok,
+    }
+    return JSONResponse(payload, status_code=200 if ok else 503)
 
 
 @app.get("/api/policy")
@@ -279,6 +372,7 @@ def create_task(body: dict[str, Any], request: Request,
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
     _enforce_rate_limit(request)
+    _prune_tasks()
 
     # 演示期全局串行：第二个任务直接 429，而不是排队；避免容器并发撑爆沙箱 VM。
     if not _TASK_SLOT.acquire(blocking=False):

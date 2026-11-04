@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -163,6 +164,29 @@ class ApiSecurityTest(unittest.TestCase):
         res = self.client.post(f"/api/tasks/{task_id}/approvals/nope",
                                json={"approved": True}, headers=TOKEN_A)
         self.assertEqual(res.status_code, 404)
+
+    def test_healthz_reports_sandbox_failure(self) -> None:
+        with mock.patch.object(api, "_sandbox_health", return_value={"ok": False, "error": "down"}):
+            res = self.client.get("/healthz")
+        self.assertEqual(res.status_code, 503)
+        self.assertFalse(res.json()["ok"])
+
+    def test_rate_limit_separates_forwarded_clients(self) -> None:
+        os.environ["RATE_LIMIT_PER_MIN"] = "1"
+        with api._RATE_LOCK:
+            api._RATE_HITS.clear()
+        first = self.client.post("/api/tasks", json={"task": "ls /workspace"},
+                                 headers={**TOKEN_A, "X-Forwarded-For": "198.51.100.1"})
+        self.assertEqual(first.status_code, 200)
+        _wait(self.client, first.json()["task_id"], TOKEN_A)
+        second = self.client.post("/api/tasks", json={"task": "ls /workspace"},
+                                  headers={**TOKEN_A, "X-Forwarded-For": "198.51.100.2"})
+        self.assertEqual(second.status_code, 200)
+        _wait(self.client, second.json()["task_id"], TOKEN_A)
+        third = self.client.post("/api/tasks", json={"task": "ls /workspace"},
+                                 headers={**TOKEN_A, "X-Forwarded-For": "198.51.100.1"})
+        self.assertEqual(third.status_code, 429)
+        os.environ["RATE_LIMIT_PER_MIN"] = "0"
 
     # ---------------------------------------------------------- rate limit
     def test_rate_limit_returns_429_with_retry_after(self) -> None:
