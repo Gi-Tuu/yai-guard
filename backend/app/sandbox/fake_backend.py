@@ -45,6 +45,9 @@ class FakeSandbox:
         self._killed.pop(task_id, None)
         return {"ok": True, "verified": True, "backend": "fake", "container": f"yaig-{task_id}"}
 
+    def list_containers(self) -> list[dict]:
+        return []
+
     def host_fingerprint(self) -> dict:
         return dict(self.host, sandbox_hostname=f"yaig-sandbox-{next(iter(self._tasks), 'idle')}")
 

@@ -41,6 +41,7 @@ from app.agent.mock_model import MockModel
 from app.policy import Decision, EvalContext, PolicyEngine, ToolCall
 from app.sandbox.fake_backend import FakeSandbox
 from app.tasks import ApprovalStatus, TaskService, TaskStatus
+from app.tasks.reaper import reap_orphans as reap_task_orphans
 from app.trace import TraceStore, new_trace_id, verify_trace_file
 from app.trace.bundle import build_bundle
 from app.containment import run_containment
@@ -454,10 +455,40 @@ def _trace_health() -> tuple[bool, str | None]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
+_REAPER_STARTED = False
+
+
+def _run_orphan_reaper(*, grace_s: float = 60.0, dry_run: bool = False) -> dict[str, Any]:
+    sandbox = _build_sandbox()
+    return reap_task_orphans(
+        TASK_SERVICE, sandbox, grace_s=grace_s, dry_run=dry_run,
+    )
+
+
+def _reaper_loop() -> None:
+    interval = max(30, int(os.environ.get("REAPER_INTERVAL_S", "300")))
+    while True:
+        time.sleep(interval)
+        try:
+            _run_orphan_reaper()
+        except Exception:  # noqa: BLE001 - background reaper must not crash the app
+            pass
+
+
 @app.on_event("startup")
 def _reap_stale_sandboxes() -> None:
-    """At app startup all in-memory tasks are gone; reap old controllers' containers."""
+    """Reap only containers that cannot belong to a healthy durable task."""
+    global _REAPER_STARTED
     if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
+        return
+    if TASK_SERVICE.enabled:
+        try:
+            _run_orphan_reaper(grace_s=0)
+        except Exception:  # noqa: BLE001 - startup cleanup is best-effort
+            pass
+        if os.environ.get("ORPHAN_REAPER", "1") != "0" and not _REAPER_STARTED:
+            _REAPER_STARTED = True
+            threading.Thread(target=_reaper_loop, name="orphan-reaper", daemon=True).start()
         return
     try:
         from app.sandbox.remote_backend import RemoteSandbox
@@ -469,6 +500,17 @@ def _reap_stale_sandboxes() -> None:
         ).reap_orphans()
     except Exception:  # noqa: BLE001 - startup cleanup is best-effort
         pass
+
+
+@app.post("/api/maintenance/reap")
+def maintenance_reap(body: dict[str, Any] | None = None,
+                     principal: str = Depends(_require_principal)) -> dict[str, Any]:
+    """Manual SQLite-aware orphan reaper; dry_run defaults to false."""
+    data = body or {}
+    return _run_orphan_reaper(
+        grace_s=float(data.get("grace_s", 60)),
+        dry_run=bool(data.get("dry_run", False)),
+    )
 
 
 @app.get("/healthz")

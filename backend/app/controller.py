@@ -66,6 +66,12 @@ def host_snapshot(x_sandbox_token: str | None = Header(default=None)) -> dict[st
     return {"ok": True, "snapshot": _backend.host_snapshot()}
 
 
+@app.get("/v1/containers")
+def list_containers(x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _auth(x_sandbox_token)
+    return {"ok": True, "containers": _backend.list_containers()}
+
+
 @app.post("/v1/orphans/reap")
 def reap_orphans(x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     """Called by the app on startup; all app-side task state is gone by then."""

@@ -390,6 +390,50 @@ class DockerSandbox:
             killed_reason=result.killed_reason,
         )
 
+    def list_containers(self) -> list[dict]:
+        """List only sandbox containers for the app-side orphan reaper."""
+        try:
+            listing = subprocess.run(
+                [self.docker_bin, "ps", "-a", "--filter", "label=yaig.task",
+                 "--format", "{{.Names}}\t{{.Status}}"],
+                capture_output=True, text=True, timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise DockerError(f"container listing failed: {type(exc).__name__}: {exc}") from exc
+        if listing.returncode != 0:
+            raise DockerError(f"container listing failed: {listing.stderr.strip()[:300]}")
+
+        containers: list[dict] = []
+        for line in listing.stdout.splitlines():
+            parts = line.split("\t")
+            name = parts[0].strip()
+            if not name.startswith("yaig-"):
+                continue
+            status = parts[1].strip() if len(parts) > 1 else ""
+            inspect = subprocess.run(
+                [self.docker_bin, "inspect", "--format",
+                 '{{.Created}}|{{index .Config.Labels "yaig.task"}}', name],
+                capture_output=True, text=True, timeout=20,
+            )
+            created = 0.0
+            task_id = name[len("yaig-"):]
+            if inspect.returncode == 0 and "|" in inspect.stdout:
+                raw_created, raw_task = inspect.stdout.strip().split("|", 1)
+                task_id = raw_task or task_id
+                try:
+                    created = datetime.fromisoformat(
+                        raw_created.replace("Z", "+00:00")
+                    ).timestamp()
+                except ValueError:
+                    created = 0.0
+            containers.append({
+                "name": name,
+                "task_id": task_id,
+                "created_at": created,
+                "status": status,
+            })
+        return containers
+
     def reap_orphans(self) -> list[str]:
         """Remove sandbox containers left by a crashed/restarted app.
 
