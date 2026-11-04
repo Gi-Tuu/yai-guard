@@ -168,6 +168,12 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(counts[TaskStatus.QUEUED.value], 1)
         self.assertEqual(counts[TaskStatus.RUNNING.value], 1)
 
+    def test_list_queued_excludes_claimed_tasks(self) -> None:
+        self._create("q1")
+        self._create("q2")
+        self.store.claim_next(worker_id="w1")
+        self.assertEqual([record.id for record in self.store.list_queued()], ["q2"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -494,6 +494,48 @@ def _reaper_loop() -> None:
             pass
 
 
+def _requeue_queued_tasks() -> dict[str, Any]:
+    """Re-dispatch only queued tasks after restart; active work is never re-run."""
+    summary: dict[str, Any] = {"requeued": [], "cancelled": [], "skipped": []}
+    if not TASK_SERVICE.enabled:
+        summary["skipped"].append("task store disabled")
+        return summary
+    if os.environ.get("REQUEUE_ON_STARTUP", "1") == "0":
+        summary["skipped"].append("disabled_by_env")
+        return summary
+    for record in TASK_SERVICE.queued_tasks():
+        if record.cancel_requested:
+            TASK_SERVICE.finish(
+                record.id, TaskStatus.CANCELLED,
+                summary="cancelled before start",
+            )
+            summary["cancelled"].append(record.id)
+            continue
+        state = TaskState(
+            task_id=record.id,
+            trace_id=record.trace_id,
+            task=record.prompt,
+            owner=record.owner,
+        )
+        with _LOCK:
+            TASKS.setdefault(record.id, state)
+        if not _reserve_queue_slot():
+            summary["skipped"].append({"task_id": record.id, "reason": "queue_full"})
+            continue
+        try:
+            _TASK_EXECUTOR.submit(_run_task, state)
+        except Exception as exc:  # noqa: BLE001
+            _release_queue_slot()
+            TASKS.pop(record.id, None)
+            summary["skipped"].append({
+                "task_id": record.id,
+                "reason": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        summary["requeued"].append(record.id)
+    return summary
+
+
 @app.on_event("startup")
 def _reap_stale_sandboxes() -> None:
     """Reap only containers that cannot belong to a healthy durable task."""
@@ -508,6 +550,10 @@ def _reap_stale_sandboxes() -> None:
         if os.environ.get("ORPHAN_REAPER", "1") != "0" and not _REAPER_STARTED:
             _REAPER_STARTED = True
             threading.Thread(target=_reaper_loop, name="orphan-reaper", daemon=True).start()
+        try:
+            _requeue_queued_tasks()
+        except Exception:  # noqa: BLE001 - do not block startup
+            pass
         return
     try:
         from app.sandbox.remote_backend import RemoteSandbox
