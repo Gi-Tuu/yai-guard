@@ -301,6 +301,28 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["reason"], "claim_evidence_mismatch")
 
+    def test_ed25519_signed_bundle_requires_pinned_key_for_verified(self) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        private = Ed25519PrivateKey.generate()
+        public = private.public_key()
+        self._make(anchor=False)
+        self.store.seal(self.anchor, ed25519_private_key=private)
+        bundle = build_bundle(self.trace, anchor_path=self.anchor)
+        result = verify_bundle_dict(bundle, public_key=public)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(result["signature_alg"], "ed25519")
+        self.assertTrue(result["ed25519_ok"])
+
+        unpinned = verify_bundle_dict(bundle)
+        self.assertEqual(unpinned["status"], "CONTENT_VERIFIED")
+        self.assertIsNone(unpinned["signature_ok"])
+
+        other = Ed25519PrivateKey.generate().public_key()
+        wrong = verify_bundle_dict(bundle, public_key=other)
+        self.assertEqual(wrong["status"], "FAILED")
+        self.assertEqual(wrong["reason"], "ed25519_mismatch")
+
     def test_cancelled_bundle_without_execution_is_content_verified(self) -> None:
         self.store.append(task_id="tk", actor="user", event="task.created", payload={})
         self.store.append(task_id="tk", actor="system", event="sandbox.created", payload={
