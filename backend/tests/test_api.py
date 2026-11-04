@@ -34,7 +34,7 @@ os.environ.setdefault("DEMO_TOKENS", "token-a,token-b")
 os.environ.setdefault("RATE_LIMIT_PER_MIN", "0")
 
 if TestClient is not None:  # 依赖齐全才导入 app
-    from app import main as api  # noqa: E402
+    from app import main as api, maintenance, routes, security, settings, task_runner, task_state  # noqa: E402
 from app.tasks import TaskService, TaskStatus  # noqa: E402
 
 TOKEN_A = {"X-Demo-Token": "token-a"}
@@ -55,10 +55,10 @@ def _wait(client, task_id: str, headers: dict, timeout_s: float = 10.0) -> dict:
 class ApiSecurityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(api.app)
-        with api._RATE_LOCK:
-            api._RATE_HITS.clear()
+        with security._RATE_LOCK:
+            security._RATE_HITS.clear()
         os.environ["RATE_LIMIT_PER_MIN"] = "0"
-        api.POLICY.approval_ttl = 1
+        settings.POLICY.approval_ttl = 1
 
     # ------------------------------------------------------------- public
     def test_healthz_is_public(self) -> None:
@@ -120,10 +120,10 @@ class ApiSecurityTest(unittest.TestCase):
     # ------------------------------------------------------------ approval
     def _seed_pending(self, task_id: str = "tk_approval", call_id: str = "call_1",
                       token: str = "token-a") -> tuple[str, str]:
-        principal = api._principal_id(token)
-        api.TASKS[task_id] = api.TaskState(task_id=task_id, trace_id="tr_" + task_id,
+        principal = security._principal_id(token)
+        task_state.TASKS[task_id] = task_state.TaskState(task_id=task_id, trace_id="tr_" + task_id,
                                            task="approval test", owner=principal)
-        api.PENDING[(task_id, call_id)] = {
+        task_state.PENDING[(task_id, call_id)] = {
             "event": threading.Event(), "approved": False, "resolved": False,
             "owner": principal, "decision": {}, "call": {},
         }
@@ -167,15 +167,15 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertEqual(res.status_code, 404)
 
     def test_healthz_reports_sandbox_failure(self) -> None:
-        with mock.patch.object(api, "_sandbox_health", return_value={"ok": False, "error": "down"}):
+        with mock.patch.object(routes, "_sandbox_health", return_value={"ok": False, "error": "down"}):
             res = self.client.get("/healthz")
         self.assertEqual(res.status_code, 503)
         self.assertFalse(res.json()["ok"])
 
     def test_rate_limit_separates_forwarded_clients(self) -> None:
         os.environ["RATE_LIMIT_PER_MIN"] = "1"
-        with api._RATE_LOCK:
-            api._RATE_HITS.clear()
+        with security._RATE_LOCK:
+            security._RATE_HITS.clear()
         first = self.client.post("/api/tasks", json={"task": "ls /workspace"},
                                  headers={**TOKEN_A, "X-Forwarded-For": "198.51.100.1"})
         self.assertEqual(first.status_code, 200)
@@ -194,7 +194,7 @@ class ApiSecurityTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         service = TaskService.from_path(pathlib.Path(tmp.name) / "tasks.db")
         try:
-            with mock.patch.object(api, "TASK_SERVICE", service):
+            with mock.patch.object(settings, "TASK_SERVICE", service):
                 created = self.client.post(
                     "/api/tasks", json={"task": "ls /workspace"}, headers=TOKEN_A
                 )
@@ -210,8 +210,8 @@ class ApiSecurityTest(unittest.TestCase):
     # ---------------------------------------------------------- rate limit
     def test_rate_limit_returns_429_with_retry_after(self) -> None:
         os.environ["RATE_LIMIT_PER_MIN"] = "2"
-        with api._RATE_LOCK:
-            api._RATE_HITS.clear()
+        with security._RATE_LOCK:
+            security._RATE_HITS.clear()
         codes = []
         for _ in range(3):
             res = self.client.post("/api/tasks", json={"task": "ls /workspace"}, headers=TOKEN_A)
@@ -224,7 +224,7 @@ class ApiSecurityTest(unittest.TestCase):
 
     # --------------------------------------------------------- concurrency
     def test_tasks_are_queued_when_execution_slots_are_busy(self) -> None:
-        acquired = api._EXEC_SLOTS.acquire(blocking=False)
+        acquired = task_state._EXEC_SLOTS.acquire(blocking=False)
         try:
             self.assertTrue(acquired)
             res = self.client.post("/api/tasks", json={"task": "ls /workspace"}, headers=TOKEN_A)
@@ -232,31 +232,31 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertEqual(res.json()["status"], "queued")
         finally:
             if acquired:
-                api._EXEC_SLOTS.release()
+                task_state._EXEC_SLOTS.release()
         _wait(self.client, res.json()["task_id"], TOKEN_A)
 
     def test_approval_wait_releases_execution_slot(self) -> None:
         from app.agent.mock_model import MockModel
         from app.policy import ToolCall
 
-        old_ttl = api.POLICY.approval_ttl
-        api.POLICY.approval_ttl = 5
+        old_ttl = settings.POLICY.approval_ttl
+        settings.POLICY.approval_ttl = 5
         models = [
             MockModel(),  # reaches the approval gate
             MockModel([ToolCall("c_finish", "finish", {"summary": "done"})]),
         ]
         try:
-            with mock.patch.object(api, "_build_model", side_effect=models):
+            with mock.patch.object(task_runner, "_build_model", side_effect=models):
                 first = self.client.post(
                     "/api/tasks", json={"task": "approval wait"}, headers=TOKEN_A
                 )
                 first_id = first.json()["task_id"]
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
-                    if any(key[0] == first_id for key in api.PENDING):
+                    if any(key[0] == first_id for key in task_state.PENDING):
                         break
                     time.sleep(0.05)
-                self.assertTrue(any(key[0] == first_id for key in api.PENDING))
+                self.assertTrue(any(key[0] == first_id for key in task_state.PENDING))
 
                 second = self.client.post(
                     "/api/tasks", json={"task": "runs while first waits"}, headers=TOKEN_A
@@ -269,7 +269,7 @@ class ApiSecurityTest(unittest.TestCase):
                     ("completed", "failed"),
                 )
 
-                call_id = next(key[1] for key in api.PENDING if key[0] == first_id)
+                call_id = next(key[1] for key in task_state.PENDING if key[0] == first_id)
                 approved = self.client.post(
                     f"/api/tasks/{first_id}/approvals/{call_id}",
                     json={"approved": True}, headers=TOKEN_A,
@@ -277,7 +277,7 @@ class ApiSecurityTest(unittest.TestCase):
                 self.assertEqual(approved.status_code, 200)
                 _wait(self.client, first_id, TOKEN_A, timeout_s=5)
         finally:
-            api.POLICY.approval_ttl = old_ttl
+            settings.POLICY.approval_ttl = old_ttl
 
     def test_two_execution_slots_run_concurrently(self) -> None:
         from app.agent.mock_model import ModelResponse
@@ -294,10 +294,10 @@ class ApiSecurityTest(unittest.TestCase):
                     finish_reason="tool_calls",
                 )
 
-        old_slots = api._EXEC_SLOTS
-        api._EXEC_SLOTS = threading.BoundedSemaphore(2)
+        old_slots = task_state._EXEC_SLOTS
+        task_state._EXEC_SLOTS = threading.BoundedSemaphore(2)
         try:
-            with mock.patch.object(api, "_build_model", side_effect=lambda: BarrierModel()):
+            with mock.patch.object(task_runner, "_build_model", side_effect=lambda: BarrierModel()):
                 first = self.client.post(
                     "/api/tasks", json={"task": "concurrent 1"}, headers=TOKEN_A
                 ).json()
@@ -307,7 +307,7 @@ class ApiSecurityTest(unittest.TestCase):
                 _wait(self.client, first["task_id"], TOKEN_A, timeout_s=8)
                 _wait(self.client, second["task_id"], TOKEN_A, timeout_s=8)
         finally:
-            api._EXEC_SLOTS = old_slots
+            task_state._EXEC_SLOTS = old_slots
 
     # ------------------------------------------------------------ cancellation
     def test_cancel_terminal_task_is_409(self) -> None:
@@ -321,20 +321,20 @@ class ApiSecurityTest(unittest.TestCase):
     def test_cancel_wakes_approval_wait(self) -> None:
         from app.agent.mock_model import MockModel
 
-        old_ttl = api.POLICY.approval_ttl
-        api.POLICY.approval_ttl = 10
+        old_ttl = settings.POLICY.approval_ttl
+        settings.POLICY.approval_ttl = 10
         try:
-            with mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+            with mock.patch.object(task_runner, "_build_model", side_effect=[MockModel()]):
                 created = self.client.post(
                     "/api/tasks", json={"task": "approval then cancel"}, headers=TOKEN_A
                 ).json()
                 task_id = created["task_id"]
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
-                    if any(key[0] == task_id for key in api.PENDING):
+                    if any(key[0] == task_id for key in task_state.PENDING):
                         break
                     time.sleep(0.05)
-                self.assertTrue(any(key[0] == task_id for key in api.PENDING))
+                self.assertTrue(any(key[0] == task_id for key in task_state.PENDING))
                 pending_verify = self.client.get(
                     f"/api/tasks/{task_id}/trace/verify", headers=TOKEN_A
                 ).json()
@@ -352,15 +352,15 @@ class ApiSecurityTest(unittest.TestCase):
                 self.assertEqual(verify["status"], "CONTENT_VERIFIED")
                 self.assertTrue(verify["ok"])
         finally:
-            api.POLICY.approval_ttl = old_ttl
+            settings.POLICY.approval_ttl = old_ttl
 
     def test_waiting_approval_verify_is_pending_then_content_verified(self) -> None:
         from app.agent.mock_model import MockModel
 
-        old_ttl = api.POLICY.approval_ttl
-        api.POLICY.approval_ttl = 10
+        old_ttl = settings.POLICY.approval_ttl
+        settings.POLICY.approval_ttl = 10
         try:
-            with mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+            with mock.patch.object(task_runner, "_build_model", side_effect=[MockModel()]):
                 created = self.client.post(
                     "/api/tasks", json={"task": "approval verify"}, headers=TOKEN_A
                 ).json()
@@ -368,7 +368,7 @@ class ApiSecurityTest(unittest.TestCase):
                 deadline = time.monotonic() + 5
                 call_id = None
                 while time.monotonic() < deadline:
-                    pending = [key[1] for key in api.PENDING if key[0] == task_id]
+                    pending = [key[1] for key in task_state.PENDING if key[0] == task_id]
                     if pending:
                         call_id = pending[0]
                         break
@@ -397,17 +397,17 @@ class ApiSecurityTest(unittest.TestCase):
                 self.assertEqual(evidence["verification"]["status"],
                                  "CONTENT_VERIFIED")
         finally:
-            api.POLICY.approval_ttl = old_ttl
+            settings.POLICY.approval_ttl = old_ttl
 
     def test_task_deadline_wakes_approval_wait(self) -> None:
         from app.agent.mock_model import MockModel
 
-        old_ttl = api.POLICY.approval_ttl
-        old_timeout = api.POLICY.limits.get("task_timeout_s")
-        api.POLICY.approval_ttl = 10
-        api.POLICY.limits["task_timeout_s"] = 1
+        old_ttl = settings.POLICY.approval_ttl
+        old_timeout = settings.POLICY.limits.get("task_timeout_s")
+        settings.POLICY.approval_ttl = 10
+        settings.POLICY.limits["task_timeout_s"] = 1
         try:
-            with mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+            with mock.patch.object(task_runner, "_build_model", side_effect=[MockModel()]):
                 created = self.client.post(
                     "/api/tasks", json={"task": "deadline while waiting"}, headers=TOKEN_A
                 ).json()
@@ -415,9 +415,9 @@ class ApiSecurityTest(unittest.TestCase):
                 self.assertEqual(final["status"], "failed")
                 self.assertIn("task_timeout", final["error"] or "")
         finally:
-            api.POLICY.approval_ttl = old_ttl
+            settings.POLICY.approval_ttl = old_ttl
             if old_timeout is not None:
-                api.POLICY.limits["task_timeout_s"] = old_timeout
+                settings.POLICY.limits["task_timeout_s"] = old_timeout
 
     def test_requeue_queued_tasks_on_startup(self) -> None:
         from types import SimpleNamespace
@@ -448,19 +448,19 @@ class ApiSecurityTest(unittest.TestCase):
 
         service = FakeService()
         executor = FakeExecutor()
-        with mock.patch.object(api, "TASK_SERVICE", service), \
-                mock.patch.object(api, "_TASK_EXECUTOR", executor), \
-                mock.patch.object(api, "_reserve_queue_slot", return_value=True), \
-                mock.patch.object(api, "_DISPATCHED_QUEUED", set()), \
-                mock.patch.dict(api.TASKS, {}, clear=True):
-            summary = api._requeue_queued_tasks()
+        with mock.patch.object(settings, "TASK_SERVICE", service), \
+                mock.patch.object(task_state, "_TASK_EXECUTOR", executor), \
+                mock.patch.object(task_state, "_reserve_queue_slot", return_value=True), \
+                mock.patch.object(task_state, "_DISPATCHED_QUEUED", set()), \
+                mock.patch.dict(task_state.TASKS, {}, clear=True):
+            summary = maintenance._requeue_queued_tasks()
             self.assertEqual(summary["requeued"], ["q1"])
             self.assertEqual([s.task_id for s in executor.submitted], ["q1"])
             self.assertEqual(executor.submitted[0].status, "queued")
             self.assertIn(("q2", TaskStatus.CANCELLED), service.finished)
-            self.assertIn("q1", api.TASKS)
+            self.assertIn("q1", task_state.TASKS)
 
-            again = api._requeue_queued_tasks()
+            again = maintenance._requeue_queued_tasks()
             self.assertEqual(again["requeued"], [])
             self.assertEqual(len(executor.submitted), 1)
             self.assertIn({"task_id": "q1", "reason": "already_dispatched"},
@@ -508,11 +508,11 @@ class ApiSecurityTest(unittest.TestCase):
 
         service = FakeService()
         executor = FakeExecutor()
-        with mock.patch.object(api, "TASK_SERVICE", service), \
-                mock.patch.object(api, "_TASK_EXECUTOR", executor), \
-                mock.patch.object(api, "_reserve_queue_slot", return_value=True), \
-                mock.patch.object(api, "_DISPATCHED_QUEUED", set()), \
-                mock.patch.dict(api.TASKS, {}, clear=True):
+        with mock.patch.object(settings, "TASK_SERVICE", service), \
+                mock.patch.object(task_state, "_TASK_EXECUTOR", executor), \
+                mock.patch.object(task_state, "_reserve_queue_slot", return_value=True), \
+                mock.patch.object(task_state, "_DISPATCHED_QUEUED", set()), \
+                mock.patch.dict(task_state.TASKS, {}, clear=True):
             created = self.client.post(
                 "/api/tasks", json={"task": "queued audit"}, headers=TOKEN_A,
             )
@@ -520,8 +520,8 @@ class ApiSecurityTest(unittest.TestCase):
             task_id = created.json()["task_id"]
             service.task_id = task_id
             self.assertEqual(len(executor.submitted), 1)
-            self.assertIn(task_id, api._DISPATCHED_QUEUED)
-            summary = api._requeue_queued_tasks()
+            self.assertIn(task_id, task_state._DISPATCHED_QUEUED)
+            summary = maintenance._requeue_queued_tasks()
             self.assertEqual(summary["requeued"], [])
             self.assertEqual(len(executor.submitted), 1)
 
@@ -538,10 +538,10 @@ class ApiSecurityTest(unittest.TestCase):
 
         executor = FakeExecutor()
         try:
-            with mock.patch.object(api, "TASK_SERVICE", service), \
-                    mock.patch.object(api, "TASK_RUNTIME_MODE", "multi"), \
-                    mock.patch.object(api, "_TASK_EXECUTOR", executor), \
-                    mock.patch.dict(api.TASKS, {}, clear=True):
+            with mock.patch.object(settings, "TASK_SERVICE", service), \
+                    mock.patch.object(settings, "TASK_RUNTIME_MODE", "multi"), \
+                    mock.patch.object(task_state, "_TASK_EXECUTOR", executor), \
+                    mock.patch.dict(task_state.TASKS, {}, clear=True):
                 created = self.client.post(
                     "/api/tasks", json={"task": "queued multi"}, headers=TOKEN_A,
                 )
@@ -558,13 +558,13 @@ class ApiSecurityTest(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         service = TaskService.from_path(pathlib.Path(tmp.name) / "tasks.db")
-        old_ttl = api.POLICY.approval_ttl
-        api.POLICY.approval_ttl = 5
+        old_ttl = settings.POLICY.approval_ttl
+        settings.POLICY.approval_ttl = 5
         try:
-            with mock.patch.object(api, "TASK_SERVICE", service), \
-                    mock.patch.object(api, "TASK_APPROVAL_STORE", "db"), \
-                    mock.patch.object(api, "TASK_EVENT_STORE", "db"), \
-                    mock.patch.object(api, "_build_model", side_effect=[MockModel()]):
+            with mock.patch.object(settings, "TASK_SERVICE", service), \
+                    mock.patch.object(settings, "TASK_APPROVAL_STORE", "db"), \
+                    mock.patch.object(settings, "TASK_EVENT_STORE", "db"), \
+                    mock.patch.object(task_runner, "_build_model", side_effect=[MockModel()]):
                 created = self.client.post(
                     "/api/tasks", json={"task": "db approval"}, headers=TOKEN_A,
                 ).json()
@@ -585,7 +585,7 @@ class ApiSecurityTest(unittest.TestCase):
                 self.assertEqual(final["status"], "completed")
                 self.assertGreater(service.count_events(task_id), 0)
         finally:
-            api.POLICY.approval_ttl = old_ttl
+            settings.POLICY.approval_ttl = old_ttl
             service.close()
             tmp.cleanup()
 
@@ -600,7 +600,7 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertTrue(ok["ok"])
         self.assertIsNone(ok["bad_seq"])
 
-        path = api.TRACES / f"{trace_id}.jsonl"
+        path = settings.TRACES / f"{trace_id}.jsonl"
         lines = path.read_text(encoding="utf-8").splitlines()
         first = json.loads(lines[0])
         first["payload"]["task"] = "tampered"
@@ -618,3 +618,5 @@ class ApiSecurityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
