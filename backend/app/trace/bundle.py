@@ -309,6 +309,155 @@ def _verify_anchor_signature(bundle: dict[str, Any], events: list[dict[str, Any]
     return result
 
 
+def _verify_terminal_state(events: list[dict[str, Any]], result: dict[str, Any],
+                           inferred_status: str) -> tuple[dict[str, Any] | None,
+                                                          str | None, bool]:
+    kinds = [event.get("event") for event in events]
+    terminal_kinds = [k for k in ("task.completed", "task.failed", "task.cancelled",
+                                  "task.interrupted")
+                      if k in kinds]
+    if len(terminal_kinds) > 1:
+        return _fail(result, "FAILED", "ambiguous_terminal_events"), None, False
+    last = kinds[-1] if kinds else None
+    if inferred_status in ("completed", "failed", "cancelled", "interrupted"):
+        expected_terminal = "task." + inferred_status
+        cleanup_failed_completion = (
+            inferred_status == "failed"
+            and "task.completed" in kinds
+            and last == "sandbox.destroy.unverified"
+        )
+        if expected_terminal not in kinds and not cleanup_failed_completion:
+            return _fail(result, "INCOMPLETE", "missing_terminal_event"), None, False
+    last = kinds[-1] if kinds else None
+    if inferred_status == "running":
+        result.update(
+            {
+                "status": "PENDING",
+                "reason": "task_running",
+                "content_ok": True,
+                "verification_level": "pending",
+            }
+        )
+        return result, None, False
+    interrupted_without_cleanup = (
+        inferred_status == "interrupted" and last == "task.interrupted"
+    )
+    no_cleanup_required = interrupted_without_cleanup or (
+        inferred_status in ("failed", "cancelled")
+        and "sandbox.created" not in kinds
+        and last == "task." + inferred_status
+    )
+    if last != "sandbox.destroy.confirmed" and not no_cleanup_required:
+        return _fail(result, "INCOMPLETE", "missing_confirmed_cleanup"), None, False
+
+    return None, last, no_cleanup_required
+
+
+def _verify_sandbox_and_cleanup(bundle: dict[str, Any],
+                                  events: list[dict[str, Any]],
+                                  result: dict[str, Any], inferred_status: str,
+                                  no_cleanup_required: bool) -> dict[str, Any] | None:
+    expected_sandbox = _sandbox_from_events(events)
+    sandbox = bundle.get("sandbox") or {}
+    required = ("runtime", "container_id", "image_id")
+    if not any(e.get("event") == "sandbox.created" for e in events):
+        if inferred_status not in ("interrupted", "failed", "cancelled"):
+            return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
+        result["sandbox_ok"] = True
+    else:
+        if any(not expected_sandbox.get(key) for key in required):
+            return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
+        if any(not sandbox.get(key) for key in required):
+            return _fail(result, "INCOMPLETE", "missing_bundle_sandbox_fields")
+        mismatched = [
+            key for key in required if sandbox.get(key) != expected_sandbox.get(key)
+        ]
+        if mismatched:
+            return _fail(
+                result,
+                "FAILED",
+                "sandbox_metadata_mismatch:" + ",".join(mismatched),
+            )
+        for key in ("backend", "limits"):
+            if key in sandbox and sandbox.get(key) != expected_sandbox.get(key):
+                return _fail(result, "FAILED", f"sandbox_{key}_mismatch")
+        result["sandbox_ok"] = True
+
+    raw_cleanup = events[-1].get("payload") or {}
+    lifecycle = bundle.get("lifecycle") or {}
+    if no_cleanup_required:
+        result["cleanup_ok"] = None
+    else:
+        bundle_cleanup = lifecycle.get("destroy")
+        if not bundle_cleanup:
+            return _fail(result, "INCOMPLETE", "missing_bundle_cleanup")
+        if bundle_cleanup != raw_cleanup:
+            return _fail(result, "FAILED", "cleanup_metadata_mismatch")
+        expected_confirmed = bool((raw_cleanup.get("cleanup") or {}).get("verified"))
+        if lifecycle.get("confirmed") is not expected_confirmed:
+            return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
+        if not expected_confirmed:
+            return _fail(result, "INCOMPLETE", "cleanup_not_confirmed")
+
+    return None
+
+
+def _verify_policy_and_approvals(bundle: dict[str, Any],
+                                       events: list[dict[str, Any]],
+                                       result: dict[str, Any]) -> dict[str, Any] | None:
+    policy = (bundle.get("policy") or {}).get("decisions")
+    expected_policy = _policy_from_events(events)
+    if policy is None:
+        return _fail(result, "INCOMPLETE", "missing_bundle_policy_decisions")
+    if policy != expected_policy:
+        return _fail(result, "FAILED", "policy_metadata_mismatch")
+    result["policy_ok"] = True
+
+    approvals = bundle.get("approvals")
+    expected_approvals = _approvals_from_events(events)
+    if approvals is None:
+        return _fail(result, "INCOMPLETE", "missing_bundle_approvals")
+    if approvals != expected_approvals:
+        return _fail(result, "FAILED", "approval_metadata_mismatch")
+    result["approvals_ok"] = True
+
+    claims_ok = _claims_check(events)
+    result["claims_ok"] = claims_ok
+    completed_payload = next(
+        (e.get("payload") or {} for e in events if e.get("event") == "task.completed"), {}
+    )
+    if completed_payload.get("claims_verified") is True and claims_ok is not True:
+        return _fail(result, "FAILED", "claim_evidence_mismatch")
+    if claims_ok is False:
+        return _fail(result, "FAILED", "claim_evidence_mismatch")
+
+    return None
+
+
+def _verify_claims_and_execution(bundle: dict[str, Any],
+                                        events: list[dict[str, Any]],
+                                        result: dict[str, Any],
+                                        inferred_status: str) -> dict[str, Any] | None:
+    expected_execution = _execution_from_events(events)
+    execution = (bundle.get("execution") or {}).get("results") or []
+    if not expected_execution:
+        # A task cancelled before its first command legitimately has no exec
+        # records. That is not missing evidence; it is the recorded outcome.
+        if inferred_status not in ("cancelled", "interrupted", "failed"):
+            return _fail(result, "INCOMPLETE", "missing_raw_execution_results")
+        if execution:
+            return _fail(result, "FAILED", "execution_metadata_mismatch")
+        result["execution_ok"] = True
+    else:
+        if not execution:
+            return _fail(result, "INCOMPLETE", "missing_bundle_execution_results")
+        if execution != expected_execution:
+            return _fail(result, "FAILED", "execution_metadata_mismatch")
+        result["execution_ok"] = True
+
+    return None
+
+
 def verify_bundle_dict(
     bundle: dict[str, Any], *, hmac_key: str | None = None,
     public_key: Any | None = None,
@@ -352,128 +501,20 @@ def verify_bundle_dict(
         return failure
     inferred_status = _infer_status(events)
 
-    kinds = [event.get("event") for event in events]
-    terminal_kinds = [k for k in ("task.completed", "task.failed", "task.cancelled",
-                                  "task.interrupted")
-                      if k in kinds]
-    if len(terminal_kinds) > 1:
-        return _fail(result, "FAILED", "ambiguous_terminal_events")
-    last = kinds[-1] if kinds else None
-    if inferred_status in ("completed", "failed", "cancelled", "interrupted"):
-        expected_terminal = "task." + inferred_status
-        cleanup_failed_completion = (
-            inferred_status == "failed"
-            and "task.completed" in kinds
-            and last == "sandbox.destroy.unverified"
-        )
-        if expected_terminal not in kinds and not cleanup_failed_completion:
-            return _fail(result, "INCOMPLETE", "missing_terminal_event")
-    last = kinds[-1] if kinds else None
-    if inferred_status == "running":
-        result.update(
-            {
-                "status": "PENDING",
-                "reason": "task_running",
-                "content_ok": True,
-                "verification_level": "pending",
-            }
-        )
-        return result
-    interrupted_without_cleanup = (
-        inferred_status == "interrupted" and last == "task.interrupted"
-    )
-    no_cleanup_required = interrupted_without_cleanup or (
-        inferred_status in ("failed", "cancelled")
-        and "sandbox.created" not in kinds
-        and last == "task." + inferred_status
-    )
-    if last != "sandbox.destroy.confirmed" and not no_cleanup_required:
-        return _fail(result, "INCOMPLETE", "missing_confirmed_cleanup")
-
-    expected_sandbox = _sandbox_from_events(events)
-    sandbox = bundle.get("sandbox") or {}
-    required = ("runtime", "container_id", "image_id")
-    if not any(e.get("event") == "sandbox.created" for e in events):
-        if inferred_status not in ("interrupted", "failed", "cancelled"):
-            return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
-        result["sandbox_ok"] = True
-    else:
-        if any(not expected_sandbox.get(key) for key in required):
-            return _fail(result, "INCOMPLETE", "missing_raw_sandbox_fields")
-        if any(not sandbox.get(key) for key in required):
-            return _fail(result, "INCOMPLETE", "missing_bundle_sandbox_fields")
-        mismatched = [
-            key for key in required if sandbox.get(key) != expected_sandbox.get(key)
-        ]
-        if mismatched:
-            return _fail(
-                result,
-                "FAILED",
-                "sandbox_metadata_mismatch:" + ",".join(mismatched),
-            )
-        for key in ("backend", "limits"):
-            if key in sandbox and sandbox.get(key) != expected_sandbox.get(key):
-                return _fail(result, "FAILED", f"sandbox_{key}_mismatch")
-        result["sandbox_ok"] = True
-
-    raw_cleanup = events[-1].get("payload") or {}
-    lifecycle = bundle.get("lifecycle") or {}
-    if no_cleanup_required:
-        result["cleanup_ok"] = None
-    else:
-        bundle_cleanup = lifecycle.get("destroy")
-        if not bundle_cleanup:
-            return _fail(result, "INCOMPLETE", "missing_bundle_cleanup")
-        if bundle_cleanup != raw_cleanup:
-            return _fail(result, "FAILED", "cleanup_metadata_mismatch")
-        expected_confirmed = bool((raw_cleanup.get("cleanup") or {}).get("verified"))
-        if lifecycle.get("confirmed") is not expected_confirmed:
-            return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
-        if not expected_confirmed:
-            return _fail(result, "INCOMPLETE", "cleanup_not_confirmed")
-
-    policy = (bundle.get("policy") or {}).get("decisions")
-    expected_policy = _policy_from_events(events)
-    if policy is None:
-        return _fail(result, "INCOMPLETE", "missing_bundle_policy_decisions")
-    if policy != expected_policy:
-        return _fail(result, "FAILED", "policy_metadata_mismatch")
-    result["policy_ok"] = True
-
-    approvals = bundle.get("approvals")
-    expected_approvals = _approvals_from_events(events)
-    if approvals is None:
-        return _fail(result, "INCOMPLETE", "missing_bundle_approvals")
-    if approvals != expected_approvals:
-        return _fail(result, "FAILED", "approval_metadata_mismatch")
-    result["approvals_ok"] = True
-
-    claims_ok = _claims_check(events)
-    result["claims_ok"] = claims_ok
-    completed_payload = next(
-        (e.get("payload") or {} for e in events if e.get("event") == "task.completed"), {}
-    )
-    if completed_payload.get("claims_verified") is True and claims_ok is not True:
-        return _fail(result, "FAILED", "claim_evidence_mismatch")
-    if claims_ok is False:
-        return _fail(result, "FAILED", "claim_evidence_mismatch")
-
-    expected_execution = _execution_from_events(events)
-    execution = (bundle.get("execution") or {}).get("results") or []
-    if not expected_execution:
-        # A task cancelled before its first command legitimately has no exec
-        # records. That is not missing evidence; it is the recorded outcome.
-        if inferred_status not in ("cancelled", "interrupted", "failed"):
-            return _fail(result, "INCOMPLETE", "missing_raw_execution_results")
-        if execution:
-            return _fail(result, "FAILED", "execution_metadata_mismatch")
-        result["execution_ok"] = True
-    else:
-        if not execution:
-            return _fail(result, "INCOMPLETE", "missing_bundle_execution_results")
-        if execution != expected_execution:
-            return _fail(result, "FAILED", "execution_metadata_mismatch")
-        result["execution_ok"] = True
+    pending, last, no_cleanup_required = _verify_terminal_state(
+        events, result, inferred_status)
+    if pending is not None:
+        return pending
+    failure = _verify_sandbox_and_cleanup(
+        bundle, events, result, inferred_status, no_cleanup_required)
+    if failure is not None:
+        return failure
+    failure = _verify_policy_and_approvals(bundle, events, result)
+    if failure is not None:
+        return failure
+    failure = _verify_claims_and_execution(bundle, events, result, inferred_status)
+    if failure is not None:
+        return failure
 
     return _verify_anchor_signature(bundle, events, result, trace_id,
                                     hmac_key, public_key)

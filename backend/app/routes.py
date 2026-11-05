@@ -144,45 +144,24 @@ def get_policy() -> dict[str, Any]:
     return settings.POLICY.summary()
 
 
-@router.post("/api/tasks")
-def create_task(body: dict[str, Any], request: Request,
-                principal: str = Depends(security._require_principal)) -> dict[str, Any]:
-    task = str(body.get("task", "")).strip()
-    if not task:
-        raise HTTPException(status_code=400, detail="task is required")
-    if len(task) > int(os.environ.get("TASK_MAX_CHARS", "100000")):
-        raise HTTPException(status_code=413, detail="task is too large")
-    if quiesce.is_quiesced():
+def _create_multi_task(task_id: str, trace_id: str, task: str,
+                       principal: str, state: task_state.TaskState) -> dict[str, Any]:
+    if settings.TASK_SERVICE.count_queued() >= settings.TASK_QUEUE_MAX:
+        raise HTTPException(status_code=429, detail="task queue is full",
+                            headers={"Retry-After": "10"})
+    created = settings.TASK_SERVICE.create(
+        task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
+    )
+    if settings.TASK_SERVICE.enabled and created is None:
         raise HTTPException(status_code=503,
-                            detail="runtime is quiesced for backup")
-    security._enforce_rate_limit(request)
-    task_state._prune_tasks()
-    if settings.TASK_RUNTIME_MODE == "multi" and not settings.TASK_SERVICE.enabled:
-        raise HTTPException(status_code=503,
-                            detail="multi-worker mode requires TASK_STORE=sqlite")
-    if (settings.TASK_RUNTIME_MODE == "single" and settings.TASK_SERVICE.enabled
-            and not settings._RUNTIME_LOCK_OK):
-        raise HTTPException(status_code=503,
-                            detail="another app instance owns the task runtime")
+                            detail="task store unavailable; task was not queued")
+    with task_state._LOCK:
+        task_state.TASKS[task_id] = state
+    return {"task_id": task_id, "trace_id": trace_id, "status": "queued"}
 
-    task_id = "tk_" + uuid.uuid4().hex[:10]
-    trace_id = new_trace_id()
-    state = task_state.TaskState(task_id=task_id, trace_id=trace_id,
-                                 task=task, owner=principal)
-    if settings.TASK_RUNTIME_MODE == "multi":
-        if settings.TASK_SERVICE.count_queued() >= settings.TASK_QUEUE_MAX:
-            raise HTTPException(status_code=429, detail="task queue is full",
-                                headers={"Retry-After": "10"})
-        created = settings.TASK_SERVICE.create(
-            task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
-        )
-        if settings.TASK_SERVICE.enabled and created is None:
-            raise HTTPException(status_code=503,
-                                detail="task store unavailable; task was not queued")
-        with task_state._LOCK:
-            task_state.TASKS[task_id] = state
-        return {"task_id": task_id, "trace_id": trace_id, "status": "queued"}
 
+def _create_single_task(task_id: str, trace_id: str, task: str,
+                        principal: str, state: task_state.TaskState) -> dict[str, Any]:
     # 有界队列：超过队列上限才拒绝；任务提交到 worker 池，状态先为 queued。
     if not task_state._reserve_queue_slot():
         raise HTTPException(status_code=429,
@@ -210,6 +189,36 @@ def create_task(body: dict[str, Any], request: Request,
             task_state.TASKS.pop(task_id, None)
         raise
     return {"task_id": task_id, "trace_id": trace_id, "status": state.status}
+
+
+@router.post("/api/tasks")
+def create_task(body: dict[str, Any], request: Request,
+                principal: str = Depends(security._require_principal)) -> dict[str, Any]:
+    task = str(body.get("task", "")).strip()
+    if not task:
+        raise HTTPException(status_code=400, detail="task is required")
+    if len(task) > int(os.environ.get("TASK_MAX_CHARS", "100000")):
+        raise HTTPException(status_code=413, detail="task is too large")
+    if quiesce.is_quiesced():
+        raise HTTPException(status_code=503,
+                            detail="runtime is quiesced for backup")
+    security._enforce_rate_limit(request)
+    task_state._prune_tasks()
+    if settings.TASK_RUNTIME_MODE == "multi" and not settings.TASK_SERVICE.enabled:
+        raise HTTPException(status_code=503,
+                            detail="multi-worker mode requires TASK_STORE=sqlite")
+    if (settings.TASK_RUNTIME_MODE == "single" and settings.TASK_SERVICE.enabled
+            and not settings._RUNTIME_LOCK_OK):
+        raise HTTPException(status_code=503,
+                            detail="another app instance owns the task runtime")
+
+    task_id = "tk_" + uuid.uuid4().hex[:10]
+    trace_id = new_trace_id()
+    state = task_state.TaskState(task_id=task_id, trace_id=trace_id,
+                                 task=task, owner=principal)
+    if settings.TASK_RUNTIME_MODE == "multi":
+        return _create_multi_task(task_id, trace_id, task, principal, state)
+    return _create_single_task(task_id, trace_id, task, principal, state)
 
 
 @router.post("/api/tasks/{task_id}/cancel")
