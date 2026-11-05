@@ -7,6 +7,7 @@
 - Added `benchmarks/external/` with 12 real PRs from GitHub Copilot and OpenHands agent accounts plus check-run evidence; synthetic set remains a separate regression.
 - Split task schema/migrations into `tasks/schema.py` and global quotas into `tasks/quotas.py`; split bundle identity/anchor helpers and trace status mapping helpers. No route/API/behavior change.
 - Tests: 241 (1 skipped).
+
 ## 2026-11-05 — v0.1.5 responsive UI (previous)
 
 - Fixed overlapping panels at narrow widths and short viewports by switching the grid to document flow below 980px or 720px height.
