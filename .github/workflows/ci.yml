@@ -19,10 +19,12 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install -r backend/requirements-dev.txt
-      - name: Unit + API tests (no silent skips)
+      - name: Unit + API tests (no silent skips, coverage report)
         env:
           REQUIRE_API_TESTS: "1"
-        run: python -m unittest discover -s backend/tests -t backend -v
+        run: |
+          coverage run --source=backend/app -m unittest discover -s backend/tests -t backend
+          coverage report
       - name: Offline demo (policy + hash chain)
         run: python backend/demo_offline.py
 
