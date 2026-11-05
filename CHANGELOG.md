@@ -8,7 +8,7 @@
 - `TaskService` degraded recovery probes a write transaction, not only a read.
 - `reconcile_terminal` uses CAS; state pruner runs in the background; schema v5 adds rate/SSE lease indexes.
 - SSE and backup consistency fixes retained; redaction handles exact `PASSWORD`/`PASSWD`/`PWD`/`CREDENTIAL` forms and quoted values.
-- Tests: 235 (1 skipped). Docker 6/6; controller 5/5.
+- Tests: 235 (1 skipped). Docker 6/6; controller 5/5.\n- Released: annotated tag `v0.1.3` at `3ecff2b`; app/controller deployed; schema v5; `TASK_DATA_KEY` configured; encrypted prompt verified in SQLite.
 ## 2026-11-05 — v0.1.2 audit remediation (previous)
 
 - Task creation now fails with HTTP 503 instead of returning a fake `queued`
@@ -97,5 +97,6 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
 
 
