@@ -1,6 +1,12 @@
 # Changelog
 
-## 2026-11-05 — v0.1.6 docs, coverage, external evidence and structural split
+## 2026-11-05 — v0.1.7 verification/create_task readability
+
+- Split the remaining `verify_bundle_dict` blocks into terminal, sandbox/cleanup, policy/approvals, and claims/execution helpers; identity/anchor-signature helpers were already separate.
+- Split `routes.create_task` into `_create_multi_task` / `_create_single_task`; validation, quiesce and rate-limit ordering unchanged.
+- No route, API, DB schema, trace judgment or status-string change.
+- Tests: 241 (1 skipped).
+## 2026-11-05 — v0.1.6 docs, coverage, external evidence and structural split (previous)
 
 - README now matches schema v5 and documents `TASK_DATA_KEY`, `/metrics`, `--quiesce`, and `rotate_data_key.py`.
 - CI unit job runs `coverage run --source=backend/app` and prints a per-file report (local ~75%, CI ~73%, no arbitrary threshold).
@@ -126,6 +132,7 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
 
 
 
