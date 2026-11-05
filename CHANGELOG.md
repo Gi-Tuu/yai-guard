@@ -1,6 +1,15 @@
 # Changelog
 
-## 2026-11-05 — v0.1.3 second-pass audit remediation
+## 2026-11-05 — v0.1.4 hardening boundaries
+
+- Windows trace writers now use a lock file + msvcrt byte lock in addition to stale seq/hash checks.
+- Controller `/healthz` is public liveness only; detailed runtime/image status moved to token-protected `/v1/status` and cached.
+- Added authenticated Prometheus-text `/metrics`.
+- Added key rotation CLI and offline key backup procedure; encrypted task data can be re-encrypted without schema changes.
+- Added operator quiesce protocol: marker file blocks new tasks/claims/retention, backup `--quiesce` waits for active tasks and removes the marker.
+- Added `scripts/soak_test.py` and measured a 20-task soak (P95 23.96s).
+- Tests: 240 (1 skipped).
+## 2026-11-05 — v0.1.3 second-pass audit remediation (previous)
 
 - Recovery now reconciles a `task.completed + sandbox.destroy.unverified` trace as failed, not completed.
 - Controller `/healthz` has a short readiness cache to avoid public-probe Docker amplification; controller create is serialized per task_id.
@@ -100,6 +109,8 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
+
 
 
 

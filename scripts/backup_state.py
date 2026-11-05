@@ -20,6 +20,7 @@ import sqlite3
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone
 
 
@@ -48,6 +49,44 @@ def _tree_fingerprint(root: pathlib.Path) -> dict[str, tuple[int, int]]:
         str(path.relative_to(root)): (path.stat().st_mtime_ns, path.stat().st_size)
         for path in sorted(root.rglob("*")) if path.is_file()
     }
+
+
+def _quiesce_marker(artifacts: pathlib.Path, db: pathlib.Path,
+                    timeout_s: float = 60.0) -> pathlib.Path:
+    marker = artifacts / "quiesce"
+    if marker.exists():
+        raise RuntimeError(f"quiesce marker already exists: {marker}")
+    if db.exists():
+        conn = sqlite3.connect(str(db))
+        try:
+            queued = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'queued'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        if queued:
+            raise RuntimeError("queued tasks remain; drain the queue before --quiesce")
+    marker.write_text("quiesced", encoding="utf-8")
+    deadline = time.monotonic() + timeout_s
+    try:
+        while db.exists() and time.monotonic() < deadline:
+            conn = sqlite3.connect(str(db))
+            try:
+                active = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status IN ('running','waiting_approval')"
+                ).fetchone()[0]
+                queued = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'queued'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            if active == 0 and queued == 0:
+                return marker
+            time.sleep(0.2)
+        raise RuntimeError("timed out waiting for active/queued tasks to drain")
+    except Exception:
+        marker.unlink(missing_ok=True)
+        raise
 
 
 def backup(artifacts: pathlib.Path, out_dir: pathlib.Path,
@@ -152,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--artifacts", default="artifacts")
     b.add_argument("--out", default="backups")
     b.add_argument("--allow-active", action="store_true")
+    b.add_argument("--quiesce", action="store_true",
+                   help="create artifacts/quiesce, wait for active tasks, then backup")
+    b.add_argument("--quiesce-timeout", type=float, default=60.0)
     r = sub.add_parser("restore")
     r.add_argument("archive")
     r.add_argument("--artifacts", default="artifacts")
@@ -160,8 +202,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "backup":
-            path = backup(pathlib.Path(args.artifacts), pathlib.Path(args.out),
-                          allow_active=args.allow_active)
+            if args.allow_active and args.quiesce:
+                parser.error("--allow-active and --quiesce are mutually exclusive")
+            artifacts = pathlib.Path(args.artifacts)
+            marker = None
+            try:
+                if args.quiesce:
+                    marker = _quiesce_marker(
+                        artifacts, artifacts / "tasks.db",
+                        timeout_s=args.quiesce_timeout,
+                    )
+                path = backup(artifacts, pathlib.Path(args.out),
+                              allow_active=args.allow_active)
+            finally:
+                if marker is not None:
+                    marker.unlink(missing_ok=True)
             print(json.dumps({"ok": True, "archive": str(path),
                               "size": path.stat().st_size}, indent=2))
         else:
@@ -176,4 +231,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 

@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Iterator
@@ -33,25 +34,51 @@ def _locked_trace_file(path: Path) -> Iterator[Any]:
 
     A lease can expire while the original worker is merely paused. The recovery
     leader must not be able to interleave a second writer and corrupt seq/hash.
-    The lock file is the trace file itself; Windows has no fcntl, so the
-    single-process tests remain unchanged.
+    Linux uses flock on the trace file; Windows uses a separate lock file and
+    msvcrt byte locking.
     """
     handle = open(path, "a+", encoding="utf-8")
-    locked = False
+    lock_handle = None
     try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_path = Path(tempfile.gettempdir()) / (
+                "yaig-trace-" + hashlib.sha256(
+                    str(path.resolve()).encode("utf-8")
+                ).hexdigest() + ".lock"
+            )
+            lock_handle = open(lock_path, "a+b")
+            if lock_handle.seek(0, os.SEEK_END) == 0:
+                lock_handle.write(b"\0")
+                lock_handle.flush()
+            lock_handle.seek(0)
+            msvcrt.locking(lock_handle.fileno(), msvcrt.LK_LOCK, 1)
+            yield handle
+            return
         try:
             import fcntl
         except ImportError:
             yield handle
             return
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        locked = True
         yield handle
     finally:
-        if locked:
+        if lock_handle is not None:
             try:
+                import msvcrt
+
+                lock_handle.seek(0)
+                msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:  # noqa: BLE001 - close releases the lock
+                pass
+            lock_handle.close()
+        else:
+            try:
+                import fcntl
+
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except Exception:  # noqa: BLE001 - closing still releases the lock
+            except Exception:  # noqa: BLE001 - close releases the lock
                 pass
         handle.close()
 
@@ -405,3 +432,4 @@ class TraceStore:
             raise TraceError(f"existing trace is corrupted at seq={bad}: {self.path}")
         self._seq = events[-1]["seq"]
         self._prev = events[-1]["hash"]
+

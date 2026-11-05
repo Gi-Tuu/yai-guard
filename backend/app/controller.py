@@ -75,16 +75,14 @@ def _auth(token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid sandbox token")
 
 
-@app.get("/healthz")
-def healthz() -> JSONResponse:
-    # Re-check Docker state, but cache briefly: /healthz is public and must not
-    # turn every probe into two Docker subprocesses.
+def _health_state() -> tuple[int, dict[str, Any]]:
+    """Return cached detailed readiness; callers decide how much to expose."""
     global _HEALTH_CACHE
     now = time.monotonic()
     with _HEALTH_LOCK:
         cached = _HEALTH_CACHE
     if cached is not None and now < cached[0]:
-        return JSONResponse(cached[2], status_code=cached[1])
+        return cached[1], cached[2]
     try:
         ready = _backend.ensure_ready()
         status = 200
@@ -108,6 +106,22 @@ def healthz() -> JSONResponse:
         }
     with _HEALTH_LOCK:
         _HEALTH_CACHE = (time.monotonic() + _HEALTH_CACHE_SECONDS, status, payload)
+    return status, payload
+
+
+@app.get("/healthz")
+def healthz() -> JSONResponse:
+    """Public liveness only; detailed runtime/image data is token-protected."""
+    status, payload = _health_state()
+    return JSONResponse({"ok": payload["ok"]}, status_code=status)
+
+
+@app.get("/v1/status")
+def detailed_status(
+    x_sandbox_token: str | None = Header(default=None),
+) -> JSONResponse:
+    _auth(x_sandbox_token)
+    status, payload = _health_state()
     return JSONResponse(payload, status_code=status)
 
 

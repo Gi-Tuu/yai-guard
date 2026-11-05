@@ -22,6 +22,24 @@ class BackupStateTest(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def test_quiesce_mode_creates_and_removes_marker(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = pathlib.Path(tmp) / "artifacts"
+            artifacts.mkdir()
+            conn = sqlite3.connect(artifacts / "tasks.db")
+            conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT)")
+            conn.commit()
+            conn.close()
+            result = subprocess.run(
+                [sys.executable, str(root / "scripts" / "backup_state.py"),
+                 "backup", "--artifacts", str(artifacts),
+                 "--out", str(pathlib.Path(tmp) / "backups"), "--quiesce"],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((artifacts / "quiesce").exists())
+
     def test_backup_rejects_state_change_during_snapshot(self) -> None:
         module = self._backup_module()
         with tempfile.TemporaryDirectory() as tmp:

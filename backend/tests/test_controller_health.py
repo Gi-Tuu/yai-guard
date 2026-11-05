@@ -25,11 +25,22 @@ class ControllerHealthTest(unittest.TestCase):
         with controller._HEALTH_LOCK:
             controller._HEALTH_CACHE = None
 
-    def test_health_rechecks_readiness(self) -> None:
+    def test_public_health_is_minimal(self) -> None:
         ready = {"daemon": {"ok": True}, "runtime": "runsc", "image": {"ok": True}}
         with mock.patch.object(controller._backend, "ensure_ready",
                                return_value=ready):
             response = controller.healthz()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body), {"ok": True})
+
+    def test_detailed_status_requires_token(self) -> None:
+        ready = {"daemon": {"ok": True}, "runtime": "runsc", "image": {"ok": True}}
+        with mock.patch.object(controller._backend, "ensure_ready",
+                               return_value=ready), \
+                mock.patch.object(controller, "_TOKEN", "test-token"):
+            with self.assertRaises(HTTPException):
+                controller.detailed_status(x_sandbox_token=None)
+            response = controller.detailed_status(x_sandbox_token="test-token")
         self.assertEqual(response.status_code, 200)
         payload = json.loads(response.body)
         self.assertTrue(payload["ok"])
@@ -40,9 +51,7 @@ class ControllerHealthTest(unittest.TestCase):
                                side_effect=RuntimeError("docker is down")):
             response = controller.healthz()
         self.assertEqual(response.status_code, 503)
-        payload = json.loads(response.body)
-        self.assertFalse(payload["ok"])
-        self.assertIn("docker is down", payload["error"])
+        self.assertEqual(json.loads(response.body), {"ok": False})
 
     def test_health_is_short_cached(self) -> None:
         ready = {"daemon": {"ok": True}, "runtime": "runsc", "image": {"ok": True}}
