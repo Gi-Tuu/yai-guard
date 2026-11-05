@@ -24,6 +24,7 @@ def reap_orphans(
     now: float | None = None,
     grace_s: float = 60.0,
     dry_run: bool = False,
+    remove_unknown: bool = False,
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
     result: dict[str, Any] = {
@@ -70,6 +71,14 @@ def reap_orphans(
             return result
         reason: str | None = None
         if record is None:
+            if not remove_unknown:
+                # A container with no record in this app's DB may belong to
+                # another instance sharing the controller. Never delete it
+                # without an explicit operator request.
+                result["kept"].append({
+                    "task_id": task_id, "reason": "unknown_task_not_owned",
+                })
+                continue
             reason = "unknown_task"
         elif is_terminal(record.status):
             reason = "terminal_task"

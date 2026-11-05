@@ -85,6 +85,22 @@ print(settings._RUNTIME_LOCK_OK)
             maintenance.start_background_tasks()
         requeue.assert_called_once()
 
+    def test_memory_fake_starts_requeue_without_remote_reap(self) -> None:
+        from unittest import mock
+        from app import maintenance, settings
+        from app.tasks import TaskService
+
+        with mock.patch.object(settings, "TASK_STORE_MODE", "memory"), \
+                mock.patch.object(settings, "TASK_SERVICE", TaskService()), \
+                mock.patch.object(settings, "_RUNTIME_LOCK_OK", True), \
+                mock.patch.object(settings, "TASK_RUNTIME_MODE", "single"), \
+                mock.patch.dict(os.environ, {"SANDBOX_DRIVER": "fake",
+                                             "REQUEUE_ON_STARTUP": "1"}), \
+                mock.patch.object(maintenance, "_start_state_pruner"), \
+                mock.patch.object(maintenance, "_start_requeue_loop") as requeue:
+            maintenance.start_background_tasks()
+        requeue.assert_called_once()
+
     def test_fresh_artifact_directory_is_created_before_lock(self) -> None:
         with tempfile.TemporaryDirectory(prefix="yaig-fresh-") as tmp:
             nested = pathlib.Path(tmp) / "fresh" / "artifacts"

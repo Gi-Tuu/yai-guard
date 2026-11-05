@@ -46,9 +46,11 @@ def _start_state_pruner() -> None:
 
 
 def _run_orphan_reaper(*, grace_s: float = 60.0,
-                       dry_run: bool = False) -> dict[str, Any]:
+                       dry_run: bool = False,
+                       remove_unknown: bool = False) -> dict[str, Any]:
     return reap_task_orphans(
         settings.TASK_SERVICE, _build_sandbox(), grace_s=grace_s, dry_run=dry_run,
+        remove_unknown=remove_unknown,
     )
 
 

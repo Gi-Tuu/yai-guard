@@ -73,13 +73,22 @@ class ReaperTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(
             sorted(item["task_id"] for item in result["removed"]),
-            ["tk_done", "tk_queued", "tk_unknown"],
+            ["tk_done", "tk_queued"],
         )
-        self.assertEqual(sandbox.destroyed, ["tk_done", "tk_queued", "tk_unknown"])
+        self.assertEqual(sandbox.destroyed, ["tk_done", "tk_queued"])
         kept = {item["task_id"]: item["reason"] for item in result["kept"]}
         self.assertEqual(kept["tk_active"], "active_task")
         self.assertEqual(kept["tk_expired"], "active_task")
+        self.assertEqual(kept["tk_unknown"], "unknown_task_not_owned")
         self.assertEqual(self.service.finished, [])
+
+    def test_unknown_removed_only_with_explicit_operator_opt_in(self) -> None:
+        sandbox = FakeSandbox([self._container("tk_unknown")])
+        result = reap_orphans(self.service, sandbox, now=self.now,
+                              remove_unknown=True)
+        self.assertEqual([item["task_id"] for item in result["removed"]],
+                         ["tk_unknown"])
+        self.assertEqual(sandbox.destroyed, ["tk_unknown"])
 
     def test_grace_window_keeps_recent_terminal_container(self) -> None:
         sandbox = FakeSandbox([self._container("tk_done", age=5)])

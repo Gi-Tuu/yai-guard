@@ -5,6 +5,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -139,6 +140,32 @@ class TaskServiceTest(unittest.TestCase):
             assert service.mark_resumed("tk", lease_seconds=3) is not None
             self.assertLessEqual(service.get_record("tk").lease_until,
                                  time.time() + 4)
+        finally:
+            service.close()
+
+    def test_finish_retries_after_cancel_version_bump(self) -> None:
+        service = TaskService.from_path(self.path)
+        try:
+            service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+            service.mark_running("tk")
+            original = service.store.finish
+            calls = {"n": 0}
+
+            def racing_finish(*args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    service.store.request_cancel("tk")
+                    return None
+                return original(*args, **kwargs)
+
+            with mock.patch.object(service.store, "finish",
+                                   side_effect=racing_finish):
+                record = service.finish("tk", TaskStatus.COMPLETED,
+                                        summary="done")
+            self.assertIsNotNone(record)
+            self.assertEqual(record.status, TaskStatus.COMPLETED)
+            self.assertEqual(service.store.get_task("tk").status,
+                             TaskStatus.COMPLETED)
         finally:
             service.close()
 

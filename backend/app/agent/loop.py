@@ -130,6 +130,20 @@ def run_agent(
     exec_seqs: list[int] = []
     exec_evidence: dict[int, dict[str, Any]] = {}
     run_result: RunResult | None = None
+
+    def cancelled(step: int) -> RunResult:
+        record(actor="system", event="task.cancelled", payload={
+            "reason": "cancel_requested", "steps": step,
+        })
+        return RunResult("cancelled", steps=step)
+
+    def timed_out(step: int) -> RunResult:
+        elapsed = time.monotonic() - started
+        record(actor="system", event="resource.limit",
+               payload={"kind": "task_timeout", "elapsed_s": round(elapsed, 1)})
+        record(actor="system", event="task.failed", payload={"reason": "task_timeout"})
+        return RunResult("failed", steps=step, error="task_timeout")
+
     try:
         sandbox.create(task_id, _limits_from(policy))
         info = sandbox.sandbox_info() if callable(getattr(sandbox, "sandbox_info", None)) else {}
@@ -144,16 +158,10 @@ def run_agent(
             step += 1
             elapsed = time.monotonic() - started
             if elapsed > timeout_s:
-                record(actor="system", event="resource.limit",
-                       payload={"kind": "task_timeout", "elapsed_s": round(elapsed, 1)})
-                record(actor="system", event="task.failed", payload={"reason": "task_timeout"})
-                run_result = RunResult("failed", steps=step, error="task_timeout")
+                run_result = timed_out(step)
                 return run_result
             if should_cancel is not None and should_cancel():
-                record(actor="system", event="task.cancelled", payload={
-                    "reason": "cancel_requested", "steps": step,
-                })
-                run_result = RunResult("cancelled", steps=step)
+                run_result = cancelled(step)
                 return run_result
 
             ctx = EvalContext(step=step, max_steps=max_steps, elapsed_s=elapsed,
@@ -174,6 +182,16 @@ def run_agent(
                 "usage": response.usage,
                 "model": response.model,
             })
+
+            # A model response can take a while; the user may cancel while the
+            # request is in flight. Do not execute any tool from this batch after
+            # that point.
+            if should_cancel is not None and should_cancel():
+                run_result = cancelled(step)
+                return run_result
+            if time.monotonic() - started > timeout_s:
+                run_result = timed_out(step)
+                return run_result
 
             if not response.tool_calls:
                 # A plain assistant answer is not a verifiable finish when commands
@@ -214,6 +232,12 @@ def run_agent(
             })
 
             for call in response.tool_calls:
+                if should_cancel is not None and should_cancel():
+                    run_result = cancelled(step)
+                    return run_result
+                if time.monotonic() - started > timeout_s:
+                    run_result = timed_out(step)
+                    return run_result
                 record(actor="agent", event="tool.requested", payload={
                     "id": call.id, "name": call.name, "arguments": call.arguments,
                 })
@@ -244,6 +268,15 @@ def run_agent(
                                              "reason": "human rejected this action; choose another approach",
                                          })})
                         continue
+
+                # Approval can block for a long time (or a human can cancel
+                # while deciding); re-check before the side effect starts.
+                if should_cancel is not None and should_cancel():
+                    run_result = cancelled(step)
+                    return run_result
+                if time.monotonic() - started > timeout_s:
+                    run_result = timed_out(step)
+                    return run_result
 
                 host_before = _host_snapshot(sandbox) if call.name == "run_command" else None
                 remaining_s = max(1, int(timeout_s - (time.monotonic() - started)))
@@ -292,6 +325,14 @@ def run_agent(
                         "bytes": result.get("bytes"),
                     })
                 elif call.name == "finish":
+                    # Cancellation wins over a same-batch finish unless the
+                    # finish already executed; re-check before publishing.
+                    if should_cancel is not None and should_cancel():
+                        run_result = cancelled(step)
+                        return run_result
+                    if time.monotonic() - started > timeout_s:
+                        run_result = timed_out(step)
+                        return run_result
                     claims, claim_error = _validate_claims(
                         call.arguments.get("claims"),
                         exec_evidence,

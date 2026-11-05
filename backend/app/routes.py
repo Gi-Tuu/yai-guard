@@ -62,6 +62,7 @@ def maintenance_reap(body: dict[str, Any] | None = None,
     return maintenance._run_orphan_reaper(
         grace_s=float(data.get("grace_s", 60)),
         dry_run=bool(data.get("dry_run", False)),
+        remove_unknown=bool(data.get("remove_unknown", False)),
     )
 
 

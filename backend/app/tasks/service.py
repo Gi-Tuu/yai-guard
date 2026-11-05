@@ -169,20 +169,31 @@ class TaskService:
                summary: str = "", error: str | None = None) -> TaskRecord | None:
         if self.store is None:
             return None
+        destination = TaskStatus(status)
+        if destination not in (
+            TaskStatus.COMPLETED, TaskStatus.FAILED,
+            TaskStatus.CANCELLED, TaskStatus.INTERRUPTED,
+        ):
+            return None
+        for _ in range(3):
+            try:
+                record = self.store.get_task(task_id)
+                if record is None or record.terminal:
+                    return record
+                persisted = self.store.finish(
+                    task_id, destination, summary=summary, error=error,
+                    expected_version=record.version,
+                )
+                if persisted is not None:
+                    return persisted
+                # A concurrent cancel/heartbeat/transition bumped version. Re-read
+                # and retry so a completed run cannot be left running forever.
+                continue
+            except Exception as exc:  # noqa: BLE001
+                self._mark_degraded(exc)
+                return None
         try:
-            record = self.store.get_task(task_id)
-            if record is None or record.terminal:
-                return record
-            destination = TaskStatus(status)
-            if destination not in (
-                TaskStatus.COMPLETED, TaskStatus.FAILED,
-                TaskStatus.CANCELLED, TaskStatus.INTERRUPTED,
-            ):
-                return record
-            return self.store.finish(
-                task_id, destination, summary=summary, error=error,
-                expected_version=record.version,
-            )
+            return self.store.get_task(task_id)
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return None
