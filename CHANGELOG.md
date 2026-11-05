@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-05 — v0.1.15 terminal cache race and cursor scan
+
+- A late finalize failure re-reads the durable terminal state and never overwrites a cache already reconciled to completed; cache updates remain version-guarded and preserve the cancel_event object identity.
+- Terminal reconciliation uses stable keyset pagination and resumes from a persisted in-process cursor across maintenance passes, so records beyond one pass are not starved by offset resets.
+- Added deterministic late-finalize/periodic-reconciliation and cross-round pagination/state-change tests.
+- Tests: 277 (7 skipped); coverage 73%.
+
 ## 2026-11-05 — v0.1.14 terminal reconciliation API and anchor gate
 
 - Added the missing `TaskService.list_tasks` API and tested it with a real TaskService + SQLite + TraceStore.
