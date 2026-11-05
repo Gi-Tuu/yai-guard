@@ -207,6 +207,11 @@ def create_task(body: dict[str, Any], request: Request,
     if quiesce.is_quiesced():
         raise HTTPException(status_code=503,
                             detail="runtime is quiesced for backup")
+    if settings.TRACE_SIGNING_ERROR is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"trace signing is configured but unavailable: {settings.TRACE_SIGNING_ERROR}",
+        )
     security._enforce_rate_limit(request)
     task_state._prune_tasks()
     if settings.TASK_RUNTIME_MODE == "multi" and not settings.TASK_SERVICE.enabled:

@@ -198,7 +198,7 @@ def run_agent(
                 )
                 record(actor="agent", event="task.completed", payload={
                     "summary": response.content, "steps": step,
-                    "claims": [], "claims_verified": False,
+                    "claims": [], "claims_bound": False,
                     "claim_binding": "none",
                     "claims_required": bool(require_claims and exec_seqs)})
                 return run_result
@@ -313,7 +313,7 @@ def run_agent(
                         "summary": call.arguments.get("summary", ""),
                         "steps": step,
                         "claims": claims,
-                        "claims_verified": bool(claims),
+                        "claims_bound": bool(claims),
                         "claims_required": bool(require_claims and exec_seqs),
                         "claim_binding": "argv+sha256",
                         "claim_semantics": "binding-only: references real execution; "

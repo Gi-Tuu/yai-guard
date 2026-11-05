@@ -12,7 +12,7 @@ from typing import Any
 from app.policy import PolicyEngine
 from app.tasks import TaskService
 
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.1.9"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -46,6 +46,10 @@ def _acquire_runtime_lock() -> bool:
     global _RUNTIME_LOCK_HANDLE
     if TASK_RUNTIME_MODE == "multi" or TASK_STORE_MODE != "sqlite":
         return True
+    try:
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
     try:
         import fcntl
     except ImportError:  # non-Unix local development; CI/runtime is Linux
@@ -107,6 +111,7 @@ TASK_HEARTBEAT_SECONDS = max(
 SSE_MAX_CONNECTIONS = int(os.environ.get("SSE_MAX_CONNECTIONS", "8"))
 RATE_WINDOW_S = 60.0
 _MISSING = object()
+
 
 
 

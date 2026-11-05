@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-05 — v0.1.8 safety remediation
+## 2026-11-05 — v0.1.8 safety remediation (previous)
 
 - Reaper now aborts the whole pass when a task record read fails; a DB error is no longer treated as an unknown task that can delete an active container.
 - Single-process runtime lock is acquired before task recovery; a second process cannot mark the first process's active tasks interrupted.
@@ -148,5 +148,6 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
 
 

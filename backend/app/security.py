@@ -13,6 +13,8 @@ from app import settings
 
 _RATE_LOCK = threading.Lock()
 _RATE_HITS: dict[str, list[float]] = {}
+_RATE_LAST_SWEEP = 0.0
+_RATE_SWEEP_INTERVAL = 60.0
 
 
 def _configured_tokens() -> set[str]:
@@ -107,6 +109,16 @@ def _enforce_rate_limit(request: Request) -> None:
         # failing open for the rest of the process lifetime.
     now = time.monotonic()
     with _RATE_LOCK:
+        global _RATE_LAST_SWEEP
+        if now - _RATE_LAST_SWEEP >= _RATE_SWEEP_INTERVAL:
+            for key in list(_RATE_HITS):
+                fresh = [t for t in _RATE_HITS[key]
+                         if now - t < settings.RATE_WINDOW_S]
+                if fresh:
+                    _RATE_HITS[key] = fresh
+                else:
+                    _RATE_HITS.pop(key, None)
+            _RATE_LAST_SWEEP = now
         hits = [t for t in _RATE_HITS.get(ip, []) if now - t < settings.RATE_WINDOW_S]
         if len(hits) >= limit:
             _RATE_HITS[ip] = hits

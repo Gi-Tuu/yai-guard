@@ -178,6 +178,15 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertEqual(res.status_code, 503)
         self.assertEqual(res.json()["signing"]["error"], "invalid key")
 
+    def test_signing_configuration_failure_rejects_create(self) -> None:
+        with mock.patch.object(settings, "TRACE_SIGNING_ERROR", "invalid key"):
+            res = self.client.post(
+                "/api/tasks", json={"task": "must not run unsigned"},
+                headers=TOKEN_A,
+            )
+        self.assertEqual(res.status_code, 503)
+        self.assertIn("signing", res.json()["detail"])
+
     def test_sqlite_unavailable_rejects_single_mode_create(self) -> None:
         service = TaskService(None, error="db down", fatal=True)
         with mock.patch.object(settings, "TASK_STORE_MODE", "sqlite"), \

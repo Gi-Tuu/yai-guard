@@ -19,6 +19,7 @@ services:
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-yaiguard/sandbox-py:1.0}
       SANDBOX_REQUIRE_DIGEST: ${SANDBOX_REQUIRE_DIGEST:-0}
+      SANDBOX_REQUIRE_RUNSC: ${SANDBOX_REQUIRE_RUNSC:-0}
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID (stat -c '%g' /var/run/docker.sock)}"
     read_only: true

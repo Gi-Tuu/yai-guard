@@ -49,9 +49,9 @@ def _image_available() -> bool:
         return False
 
 
-DOCKER = _docker_available()
-IMAGE_READY = _image_available()
 DOCKER_TESTS_ENABLED = os.environ.get("REQUIRE_DOCKER_TESTS") == "1"
+DOCKER = _docker_available() if DOCKER_TESTS_ENABLED else False
+IMAGE_READY = _image_available() if DOCKER_TESTS_ENABLED else False
 SKIP_REASON = (
     "set REQUIRE_DOCKER_TESTS=1 to run shared-Docker tests"
     if not DOCKER_TESTS_ENABLED

@@ -232,6 +232,14 @@ def execute(task_id: str, body: dict[str, Any],
 async def put_file(task_id: str, path: str, request: Request,
                    x_sandbox_token: str | None = Header(default=None)) -> dict[str, Any]:
     _auth(x_sandbox_token)
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > _MAX_FILE_BYTES:
+                raise HTTPException(status_code=413,
+                                    detail=f"file exceeds {_MAX_FILE_BYTES} bytes")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length")
     data = await request.body()
     if len(data) > _MAX_FILE_BYTES:
         raise HTTPException(status_code=413,

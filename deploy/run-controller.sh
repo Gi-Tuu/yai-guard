@@ -41,6 +41,8 @@ docker run -d \
   -e "SANDBOX_TOKEN=${SANDBOX_TOKEN}" \
   -e "SANDBOX_RUNTIME=${SANDBOX_RUNTIME}" \
   -e "SANDBOX_IMAGE=${SANDBOX_IMAGE}" \
+  -e "SANDBOX_REQUIRE_DIGEST=${SANDBOX_REQUIRE_DIGEST:-0}" \
+  -e "SANDBOX_REQUIRE_RUNSC=${SANDBOX_REQUIRE_RUNSC:-0}" \
   yaiguard/controller:1.0
 
 for _ in $(seq 1 30); do

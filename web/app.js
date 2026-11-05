@@ -302,7 +302,7 @@
       case 'sandbox.destroy.unverified':
         return `cleanup=UNVERIFIED error=${(p.cleanup || {}).error || 'unknown'}`;
       case 'task.completed':
-        return `summary: ${p.summary || ''}\nclaims=${(p.claims || []).length} verified=${p.claims_verified}`;
+        return `summary: ${p.summary || ''}\nclaims=${(p.claims || []).length} bound=${p.claims_bound ?? p.claims_verified}`;
       case 'task.failed':
         return fmt(p);
       default:

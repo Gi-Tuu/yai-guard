@@ -183,7 +183,7 @@ class ClaimEvidenceTest(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         events = self.trace.read()
         completed = next(e for e in events if e["event"] == "task.completed")
-        self.assertTrue(completed["payload"]["claims_verified"])
+        self.assertTrue(completed["payload"]["claims_bound"])
         exec_seq = next(e["seq"] for e in events if e["event"] == "sandbox.exec")
         self.assertEqual(completed["payload"]["claims"][0]["evidence_seq"], exec_seq)
 
@@ -203,7 +203,7 @@ class ClaimEvidenceTest(unittest.TestCase):
         )
         self.assertEqual(result.status, "completed")
         completed = next(e for e in self.trace.read() if e["event"] == "task.completed")
-        self.assertTrue(completed["payload"]["claims_verified"])
+        self.assertTrue(completed["payload"]["claims_bound"])
         self.assertEqual(completed["payload"]["claims"][0]["evidence_exit_code"], 1)
         self.assertIn("binding-only", completed["payload"]["claim_semantics"])
 
@@ -269,7 +269,7 @@ class ClaimEvidenceTest(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         completed = next(e for e in self.trace.read() if e["event"] == "task.completed")
         self.assertTrue(completed["payload"]["claims_required"])
-        self.assertTrue(completed["payload"]["claims_verified"])
+        self.assertTrue(completed["payload"]["claims_bound"])
 
 if __name__ == "__main__":
     unittest.main()

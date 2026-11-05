@@ -97,8 +97,10 @@ runtime:
   `rate_hits(ts)` and `sse_leases(created_at)` used by global quota cleanup;
   migrations are serialized across workers with a file lock.
 
-Approval and task transitions are written through `TaskService`; a SQLite failure is
-surfaced as degraded health instead of breaking task creation.
+Approval and task transitions are written through `TaskService`; an explicit
+SQLite initialization failure fails closed: task creation returns 503 instead of
+silently falling back to a memory task. Runtime write failures are surfaced as
+degraded health.
 
 ---
 

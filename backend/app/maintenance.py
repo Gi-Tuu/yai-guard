@@ -366,8 +366,19 @@ def _start_multi_runtime() -> None:
                          daemon=True).start()
 
 
+def _start_requeue_loop() -> None:
+    global _REQUEUE_STARTED
+    if os.environ.get("REQUEUE_ON_STARTUP", "1") == "0":
+        return
+    if _REQUEUE_STARTED:
+        return
+    _REQUEUE_STARTED = True
+    threading.Thread(target=_requeue_loop, name="queued-requeue",
+                     daemon=True).start()
+
+
 def _start_single_runtime() -> None:
-    global _REAPER_STARTED, _REQUEUE_STARTED, _RETENTION_STARTED
+    global _REAPER_STARTED, _RETENTION_STARTED
     try:
         _run_orphan_reaper(grace_s=0)
     except Exception:  # noqa: BLE001 - startup cleanup is best-effort
@@ -379,10 +390,7 @@ def _start_single_runtime() -> None:
         _requeue_queued_tasks()
     except Exception:  # noqa: BLE001 - do not block startup
         pass
-    if os.environ.get("REQUEUE_ON_STARTUP", "1") != "0" and not _REQUEUE_STARTED:
-        _REQUEUE_STARTED = True
-        threading.Thread(target=_requeue_loop, name="queued-requeue",
-                         daemon=True).start()
+    _start_requeue_loop()
     try:
         _record_interrupted_events()
     except Exception:  # noqa: BLE001 - do not block startup
@@ -421,14 +429,14 @@ def start_background_tasks() -> None:
     if settings.TASK_SERVICE.enabled and settings.TASK_RUNTIME_MODE == "multi":
         _start_multi_runtime()
         return
-    if os.environ.get("SANDBOX_DRIVER", "fake") != "remote":
-        return
     if settings.TASK_SERVICE.enabled:
+        # SQLite single mode and fake/docker single mode both need the
+        # memory/DB requeue and retention loops; do not gate them on remote.
         _start_single_runtime()
         return
-    _start_fake_runtime()
-    if os.environ.get("REQUEUE_ON_STARTUP", "1") != "0" and not _REQUEUE_STARTED:
-        _REQUEUE_STARTED = True
-        threading.Thread(target=_requeue_loop, name="queued-requeue",
-                         daemon=True).start()
+    if os.environ.get("SANDBOX_DRIVER", "fake") == "remote":
+        _start_fake_runtime()
+    # Memory mode has no DB queue, but a quiesce can still strand an in-memory
+    # task; always start the requeue loop for single-process mode.
+    _start_requeue_loop()
 

@@ -426,7 +426,10 @@ def _verify_policy_and_approvals(bundle: dict[str, Any],
     completed_payload = next(
         (e.get("payload") or {} for e in events if e.get("event") == "task.completed"), {}
     )
-    if completed_payload.get("claims_verified") is True and claims_ok is not True:
+    claims_bound = completed_payload.get(
+        "claims_bound", completed_payload.get("claims_verified"),
+    )
+    if claims_bound is True and claims_ok is not True:
         return _fail(result, "FAILED", "claim_evidence_mismatch")
     if claims_ok is False:
         return _fail(result, "FAILED", "claim_evidence_mismatch")
