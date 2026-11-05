@@ -401,6 +401,18 @@ class TaskService:
             self._mark_degraded(exc)
             return []
 
+    def list_tasks(self, *, owner: str | None = None,
+                   status: TaskStatus | str | None = None,
+                   limit: int = 50) -> list[TaskRecord]:
+        """Strict task listing for maintenance/reconciliation callers."""
+        if self.store is None:
+            raise RuntimeError("task store is disabled")
+        try:
+            return self.store.list_tasks(owner=owner, status=status, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            raise
+
     def get_record(self, task_id: str) -> TaskRecord | None:
         if self.store is None:
             return None

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-05 — v0.1.14 terminal reconciliation API and anchor gate
+
+- Added the missing `TaskService.list_tasks` API and tested it with a real TaskService + SQLite + TraceStore.
+- Running/waiting reconciliation now requires an existing anchor and, for completed, a confirmed cleanup whose anchor hash/count matches the trace.
+- Single-process requeue loop now periodically reconciles terminal traces instead of only at startup.
+- Reconciliation checks the DB CAS result and does not claim success when the record remains non-terminal.
+- Tests: 266 (7 skipped); coverage 73%.
+
 ## 2026-11-05 — v0.1.13 atomic transitions and terminal reconciliation
 
 - `TaskStore.transition` now updates with `id + source status + version` in the WHERE clause, so a stale worker cannot overwrite a recovery/cancel terminal decision.

@@ -69,6 +69,9 @@ class MaintenanceEvidenceTest(unittest.TestCase):
             trace.append(task_id="tk", actor="system", event="task.created", payload={})
             trace.append(task_id="tk", actor="agent", event="task.completed",
                          payload={"summary": "done"})
+            trace.append(task_id="tk", actor="system",
+                         event="sandbox.destroy.confirmed",
+                         payload={"cleanup": {"verified": True}})
             trace.seal(traces / f"{trace_id}.anchor.json")
             record = SimpleNamespace(id="tk", trace_id=trace_id, error=None)
             calls: list[tuple] = []
@@ -85,6 +88,7 @@ class MaintenanceEvidenceTest(unittest.TestCase):
 
                 def reconcile_terminal(self, task_id, status, **kwargs):
                     calls.append((task_id, status, kwargs))
+                    return SimpleNamespace(status=status)
 
             with mock.patch.object(settings, "TRACES", traces), \
                     mock.patch.object(settings, "TASK_SERVICE", Service()), \
@@ -92,6 +96,63 @@ class MaintenanceEvidenceTest(unittest.TestCase):
                 recorded = maintenance._record_interrupted_events()
             self.assertEqual(recorded, ["tk"])
             self.assertEqual(calls[0][1].value, "completed")
+
+    def test_real_service_reconciles_running_terminal_trace(self) -> None:
+        from app.tasks import TaskService, TaskStatus
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            service = TaskService.from_path(root / "tasks.db")
+            try:
+                service.create(task_id="tk", trace_id="tr", owner="u", prompt="x")
+                service.mark_running("tk")
+                trace = TraceStore(root / "tr.jsonl", "tr")
+                trace.append(task_id="tk", actor="system", event="task.created", payload={})
+                trace.append(task_id="tk", actor="agent", event="task.completed",
+                             payload={"summary": "done"})
+                trace.append(task_id="tk", actor="system",
+                             event="sandbox.destroy.confirmed",
+                             payload={"cleanup": {"verified": True}})
+                trace.seal(root / "tr.anchor.json")
+                with mock.patch.object(settings, "TRACES", root), \
+                        mock.patch.object(settings, "TASK_SERVICE", service), \
+                        mock.patch.object(settings, "TRACE_ED25519_KEY", None):
+                    recorded = maintenance._record_interrupted_events()
+                self.assertEqual(recorded, ["tk"])
+                self.assertEqual(service.get_record("tk").status,
+                                 TaskStatus.COMPLETED)
+            finally:
+                service.close()
+
+    def test_unsealed_completed_trace_is_not_reconciled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            traces = pathlib.Path(tmp)
+            trace_id = "tr_unsealed"
+            trace = TraceStore(traces / f"{trace_id}.jsonl", trace_id)
+            trace.append(task_id="tk", actor="system", event="task.created", payload={})
+            trace.append(task_id="tk", actor="agent", event="task.completed",
+                         payload={"summary": "done"})
+            record = SimpleNamespace(id="tk", trace_id=trace_id, error=None)
+            calls: list[tuple] = []
+
+            class Service:
+                enabled = True
+
+                def interrupted_tasks(self):
+                    return []
+
+                def list_tasks(self, *, status=None, limit=50):
+                    value = getattr(status, "value", status)
+                    return [record] if value == "running" else []
+
+                def reconcile_terminal(self, task_id, status, **kwargs):
+                    calls.append((task_id, status))
+                    return SimpleNamespace(status=status)
+
+            with mock.patch.object(settings, "TRACES", traces), \
+                    mock.patch.object(settings, "TASK_SERVICE", Service()):
+                recorded = maintenance._record_interrupted_events()
+            self.assertEqual(recorded, [])
+            self.assertEqual(calls, [])
 
     def test_cleanup_unverified_is_reconciled_as_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,6 +165,7 @@ class MaintenanceEvidenceTest(unittest.TestCase):
             trace.append(task_id="tk", actor="system",
                          event="sandbox.destroy.unverified",
                          payload={"cleanup": {"verified": False}})
+            trace.seal(traces / f"{trace_id}.anchor.json")
             record = SimpleNamespace(
                 id="tk", trace_id=trace_id, error="lease_expired",
             )
@@ -117,7 +179,7 @@ class MaintenanceEvidenceTest(unittest.TestCase):
 
                 def reconcile_terminal(self, task_id, status, **kwargs):
                     calls.append((task_id, status, kwargs))
-                    return None
+                    return SimpleNamespace(status=status)
 
             with mock.patch.object(settings, "TRACES", traces), \
                     mock.patch.object(settings, "TASK_SERVICE", Service()):

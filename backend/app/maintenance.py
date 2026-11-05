@@ -1,8 +1,10 @@
 """Background maintenance: reaper, retention, requeue, multi-worker recovery."""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import pathlib
 import threading
 import time
 from typing import Any
@@ -184,7 +186,8 @@ def _reaper_loop() -> None:
             _log.warning("orphan reaper failed", exc_info=True)
 
 
-def _reconcile_terminal_from_events(record: Any, events: list[dict[str, Any]]) -> bool:
+def _reconcile_terminal_from_events(record: Any, events: list[dict[str, Any]],
+                                    *, trace_path: pathlib.Path) -> bool:
     terminal_events = [
         e for e in events
         if e.get("event") in ("task.completed", "task.failed", "task.cancelled")
@@ -204,12 +207,30 @@ def _reconcile_terminal_from_events(record: Any, events: list[dict[str, Any]]) -
                     for e in events)):
         target = TaskStatus.FAILED
         reconcile_error = "cleanup_unverified"
-    settings.TASK_SERVICE.reconcile_terminal(
+
+    anchor_path = trace_path.with_name(trace_path.name.replace(
+        ".jsonl", ".anchor.json"))
+    if not anchor_path.exists():
+        return False
+    # A completed recovery must also have a confirmed cleanup and an anchor
+    # that matches this exact trace; otherwise it is only an interrupted
+    # execution whose cleanup is unknown.
+    if target is TaskStatus.COMPLETED:
+        if not events or events[-1].get("event") != "sandbox.destroy.confirmed":
+            return False
+        try:
+            anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if (anchor.get("events") != len(events)
+                or anchor.get("final_hash") != events[-1].get("hash")):
+            return False
+    result = settings.TASK_SERVICE.reconcile_terminal(
         record.id, target,
         summary=str(payload.get("summary", "")),
         error=reconcile_error,
     )
-    return True
+    return result is not None and result.status is target
 
 
 def _record_interrupted_events() -> list[str]:
@@ -226,8 +247,13 @@ def _record_interrupted_events() -> list[str]:
             events = trace.read()
             if not events:
                 continue
-            if _reconcile_terminal_from_events(record, events):
+            if _reconcile_terminal_from_events(record, events, trace_path=path):
                 recorded.append(record.id)
+                continue
+            if any(e.get("event") in ("task.completed", "task.failed",
+                                      "task.cancelled") for e in events):
+                # Terminal-looking but unsealed/incomplete evidence must not
+                # be converted into a second interrupted event.
                 continue
             if any(e.get("event") == "task.interrupted" for e in events):
                 continue
@@ -262,9 +288,12 @@ def _record_interrupted_events() -> list[str]:
                 continue
             try:
                 events = TraceStore(path, record.trace_id).read()
-                if events and _reconcile_terminal_from_events(record, events):
+                if events and _reconcile_terminal_from_events(
+                        record, events, trace_path=path):
                     recorded.append(record.id)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("terminal reconciliation failed for %s: %s",
+                             record.id, exc)
                 continue
     return recorded
 
@@ -374,6 +403,12 @@ def _requeue_loop() -> None:
             _requeue_queued_tasks()
         except Exception:  # noqa: BLE001 - background retry must not crash
             _log.warning("queued requeue failed", exc_info=True)
+        try:
+            # Single-process lifetime reconciliation: a transient DB finish
+            # failure must repair before the next restart, not only at boot.
+            _record_interrupted_events()
+        except Exception:  # noqa: BLE001
+            _log.warning("periodic terminal reconciliation failed", exc_info=True)
 
 
 def _start_multi_runtime() -> None:

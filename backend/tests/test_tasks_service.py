@@ -143,6 +143,15 @@ class TaskServiceTest(unittest.TestCase):
         finally:
             service.close()
 
+    def test_list_tasks_is_exposed_by_service(self) -> None:
+        service = TaskService.from_path(self.path)
+        try:
+            service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+            records = service.list_tasks(status=TaskStatus.QUEUED)
+            self.assertEqual([record.id for record in records], ["tk"])
+        finally:
+            service.close()
+
     def test_finish_retries_after_cancel_version_bump(self) -> None:
         service = TaskService.from_path(self.path)
         try:
