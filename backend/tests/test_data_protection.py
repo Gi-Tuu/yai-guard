@@ -1,6 +1,7 @@
 """Field-level encryption for task prompt/summary/error at rest."""
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import sys
 import tempfile
@@ -14,6 +15,41 @@ from app.tasks.models import TaskStatus  # noqa: E402
 
 
 class DataProtectionTest(unittest.TestCase):
+    def test_key_rotation_reencrypts_existing_fields(self) -> None:
+        from cryptography.fernet import Fernet
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "rotate_data_key_under_test", root / "scripts" / "rotate_data_key.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        old_key = Fernet.generate_key().decode("ascii")
+        new_key = Fernet.generate_key().decode("ascii")
+        data_protection.configure(old_key)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = pathlib.Path(tmp) / "tasks.db"
+                store = TaskStore(db)
+                try:
+                    store.create_task(task_id="tk", trace_id="tr", owner="u",
+                                      prompt="secret prompt")
+                    store.transition("tk", TaskStatus.RUNNING)
+                    store.finish("tk", TaskStatus.COMPLETED, summary="secret summary")
+                finally:
+                    store.close()
+                counts = module.rotate(db, old_key, new_key)
+                self.assertEqual(counts["tasks"], 1)
+                data_protection.configure(new_key)
+                store = TaskStore(db)
+                try:
+                    record = store.get_task("tk")
+                    self.assertEqual(record.prompt, "secret prompt")
+                    self.assertEqual(record.summary, "secret summary")
+                finally:
+                    store.close()
+        finally:
+            data_protection.configure(None)
+
     def test_encrypted_task_text_roundtrip_and_raw_storage(self) -> None:
         from cryptography.fernet import Fernet
 

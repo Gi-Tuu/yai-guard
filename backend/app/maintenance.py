@@ -12,6 +12,7 @@ from app.tasks.reaper import reap_orphans as reap_task_orphans
 from app.trace import TraceStore
 from app import settings
 from app import task_state
+from app import quiesce
 from app.task_runner import _build_sandbox, run_task
 
 _log = logging.getLogger(__name__)
@@ -27,6 +28,8 @@ _MAINTENANCE_LOCK_HANDLE = None
 def _state_prune_loop() -> None:
     while True:
         time.sleep(60)
+        if quiesce.is_quiesced():
+            continue
         try:
             task_state._prune_tasks()
         except Exception:  # noqa: BLE001
@@ -82,6 +85,8 @@ def _retention_loop() -> None:
     interval = max(60, int(os.environ.get("RETENTION_INTERVAL_S", "21600")))
     while True:
         time.sleep(interval)
+        if quiesce.is_quiesced():
+            continue
         try:
             _prune_old_state()
         except Exception:  # noqa: BLE001 - retention must not crash the app
@@ -91,6 +96,10 @@ def _retention_loop() -> None:
 def _multi_worker_loop(worker_id: str) -> None:
     while True:
         if not task_state._EXEC_SLOTS.acquire(blocking=False):
+            time.sleep(0.5)
+            continue
+        if quiesce.is_quiesced():
+            task_state._release_exec_slot()
             time.sleep(0.5)
             continue
         record = settings.TASK_SERVICE.claim_next(
@@ -139,6 +148,8 @@ def _multi_recovery_loop() -> None:
     next_prune = 0.0
     while True:
         time.sleep(max(5, int(os.environ.get("MULTI_RECOVERY_INTERVAL_S", "15"))))
+        if quiesce.is_quiesced():
+            continue
         if not _try_maintenance_lock():
             continue
         try:
@@ -163,6 +174,8 @@ def _reaper_loop() -> None:
     interval = max(30, int(os.environ.get("REAPER_INTERVAL_S", "300")))
     while True:
         time.sleep(interval)
+        if quiesce.is_quiesced():
+            continue
         try:
             _run_orphan_reaper()
         except Exception:  # noqa: BLE001 - background reaper must not crash the app
@@ -230,6 +243,9 @@ def _record_interrupted_events() -> list[str]:
 def _requeue_queued_tasks() -> dict[str, Any]:
     """Re-dispatch queued tasks; dispatched-but-not-started ones are not duplicated."""
     summary: dict[str, Any] = {"requeued": [], "cancelled": [], "skipped": []}
+    if quiesce.is_quiesced():
+        summary["skipped"].append("quiesced")
+        return summary
     if not settings.TASK_SERVICE.enabled:
         summary["skipped"].append("task store disabled")
         return summary

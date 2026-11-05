@@ -8,10 +8,11 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
+                               StreamingResponse)
 
 from app.containment import run_containment
-from app import maintenance, security, settings, task_state, task_runner
+from app import maintenance, quiesce, security, settings, task_state, task_runner
 from app.tasks import ApprovalStatus
 from app.trace import new_trace_id, verify_trace_file
 from app.trace.bundle import build_bundle
@@ -103,6 +104,41 @@ def healthz() -> JSONResponse:
     return JSONResponse(payload, status_code=200 if ok else 503)
 
 
+@router.get("/metrics")
+def metrics(principal: str = Depends(security._require_principal)) -> PlainTextResponse:
+    """Minimal Prometheus text; scrape with X-Demo-Token."""
+    if settings.TASK_SERVICE.enabled:
+        counts = settings.TASK_SERVICE.count_by_status()
+    else:
+        counts = {}
+        for state in task_state.TASKS.values():
+            counts[state.status] = counts.get(state.status, 0) + 1
+    lines = [
+        "# HELP yaig_tasks_total Tasks by status",
+        "# TYPE yaig_tasks_total gauge",
+    ]
+    for status in sorted(counts):
+        lines.append(f'yaig_tasks_total{{status="{status}"}} {counts[status]}')
+    queued = (settings.TASK_SERVICE.count_queued()
+              if settings.TASK_RUNTIME_MODE == "multi"
+              else task_state.queued_count())
+    lines += [
+        "# HELP yaig_queue_queued_number Queued tasks",
+        "# TYPE yaig_queue_queued_number gauge",
+        f"yaig_queue_queued_number {queued}",
+        "# HELP yaig_task_store_degraded Task store degraded flag",
+        "# TYPE yaig_task_store_degraded gauge",
+        f"yaig_task_store_degraded {1 if settings.TASK_SERVICE.degraded else 0}",
+        "# HELP yaig_runtime_lock_ok Runtime lock flag",
+        "# TYPE yaig_runtime_lock_ok gauge",
+        f"yaig_runtime_lock_ok {1 if settings._RUNTIME_LOCK_OK else 0}",
+        "# HELP yaig_signing_configured Ed25519 signing configured",
+        "# TYPE yaig_signing_configured gauge",
+        f"yaig_signing_configured {1 if settings.TRACE_ED25519_PUBLIC is not None else 0}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
+
+
 @router.get("/api/policy")
 def get_policy() -> dict[str, Any]:
     return settings.POLICY.summary()
@@ -116,6 +152,9 @@ def create_task(body: dict[str, Any], request: Request,
         raise HTTPException(status_code=400, detail="task is required")
     if len(task) > int(os.environ.get("TASK_MAX_CHARS", "100000")):
         raise HTTPException(status_code=413, detail="task is too large")
+    if quiesce.is_quiesced():
+        raise HTTPException(status_code=503,
+                            detail="runtime is quiesced for backup")
     security._enforce_rate_limit(request)
     task_state._prune_tasks()
     if settings.TASK_RUNTIME_MODE == "multi" and not settings.TASK_SERVICE.enabled:
@@ -327,6 +366,9 @@ def verify_trace(task_id: str,
 def run_containment_lab(request: Request,
                         principal: str = Depends(security._require_principal)) -> dict[str, Any]:
     """直接跑 5 个容器边界探针；不经过 policy/LLM。"""
+    if quiesce.is_quiesced():
+        raise HTTPException(status_code=503,
+                            detail="runtime is quiesced for backup")
     security._enforce_rate_limit(request)
     if not task_state._EXEC_SLOTS.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="all execution slots are busy")

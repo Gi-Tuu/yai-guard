@@ -314,6 +314,15 @@ class TaskService:
             self._mark_degraded(exc)
             return 0
 
+    def count_by_status(self) -> dict[str, int]:
+        if self.store is None:
+            return {}
+        try:
+            return self.store.count_by_status()
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            return {}
+
     def rate_limit(self, key: str, *, limit: int, window_s: float) -> int:
         if self.store is None:
             return 0

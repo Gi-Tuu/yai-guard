@@ -90,7 +90,7 @@ class RemoteSandbox:
 
     def host_fingerprint(self) -> dict:
         try:
-            return self._request("GET", "/healthz")
+            return self._request("GET", "/v1/status")
         except RuntimeError:
             return {}
 

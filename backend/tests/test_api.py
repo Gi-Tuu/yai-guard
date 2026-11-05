@@ -466,6 +466,25 @@ class ApiSecurityTest(unittest.TestCase):
             self.assertIn({"task_id": "q1", "reason": "already_dispatched"},
                           again["skipped"])
 
+    def test_quiesce_blocks_new_tasks(self) -> None:
+        marker = settings.ARTIFACTS / "quiesce"
+        try:
+            marker.write_text("quiesced", encoding="utf-8")
+            res = self.client.post(
+                "/api/tasks", json={"task": "must not start"}, headers=TOKEN_A,
+            )
+            self.assertEqual(res.status_code, 503)
+            self.assertIn("quiesced", res.json()["detail"])
+        finally:
+            marker.unlink(missing_ok=True)
+
+    def test_metrics_require_token_and_render_text(self) -> None:
+        self.assertEqual(self.client.get("/metrics").status_code, 401)
+        res = self.client.get("/metrics", headers=TOKEN_A)
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("yaig_tasks_total", res.text)
+        self.assertIn("yaig_task_store_degraded", res.text)
+
     def test_rate_limit_falls_back_when_global_quota_store_fails(self) -> None:
         from starlette.requests import Request
         from fastapi import HTTPException

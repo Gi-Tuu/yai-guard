@@ -15,6 +15,7 @@ from app.tasks import ApprovalStatus, TaskStatus
 from app.trace import TraceStore
 from app import settings
 from app import task_state
+from app import quiesce
 from app.task_state import TaskState
 
 
@@ -186,6 +187,9 @@ class RunContext:
 
 def _prepare_run(state: TaskState, *, already_claimed: bool,
                  slot_held: bool) -> RunContext | None:
+    if quiesce.is_quiesced() and not already_claimed:
+        task_state._release_queue_slot()
+        return None
     if not already_claimed:
         task_state._release_queue_slot()
     if not slot_held:
