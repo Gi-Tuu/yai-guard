@@ -129,6 +129,110 @@ def _verify_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
             "final_hash": prev if chain_ok else None}
 
 
+def _cleanup_state(kinds: list[str | None], last: str | None) -> bool | None:
+    if last == "sandbox.destroy.unverified":
+        return False
+    if last == "sandbox.destroy.confirmed":
+        return True
+    # Legacy event only proves that a destroy was attempted. Strict
+    # verification must not turn it into a confirmed cleanup.
+    return None
+
+
+def _completeness_state(task_status: str | None, kinds: list[str | None],
+                        last: str | None) -> bool | None:
+    if task_status == "completed":
+        return bool("task.completed" in kinds
+                    and last in ("sandbox.destroy.confirmed", "sandbox.destroyed"))
+    if task_status == "failed":
+        return bool("task.failed" in kinds
+                    or ("task.completed" in kinds
+                        and last == "sandbox.destroy.unverified"))
+    if task_status == "cancelled":
+        return bool("task.cancelled" in kinds
+                    and ("sandbox.created" not in kinds
+                         or last == "sandbox.destroy.confirmed"))
+    if task_status == "interrupted":
+        # Recovery proves the interruption; a confirmed cleanup is nice but not
+        # required because the crashed process never got to write it.
+        return "task.interrupted" in kinds
+    return None
+
+
+def _anchor_state(anchor_path: str | Path | None, event_count: int,
+                  final_hash: str | None, hmac_key: str | None,
+                  public_key: Any | None) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "anchor_ok": None, "authentic": None, "signature_alg": None,
+        "ed25519_ok": None, "reason": None,
+    }
+    anchor_present = bool(anchor_path) and Path(anchor_path).exists()
+    if anchor_path is not None and not anchor_present:
+        state["anchor_ok"] = False
+        state["reason"] = "anchor_missing"
+        return state
+    if not anchor_present:
+        return state
+    try:
+        anchor = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state["anchor_ok"] = False
+        state["reason"] = "anchor_malformed"
+        return state
+    state["anchor_ok"] = (
+        anchor.get("events") == event_count
+        and anchor.get("final_hash") == final_hash
+    )
+    if not state["anchor_ok"]:
+        state["reason"] = "anchor_mismatch"
+    if hmac_key:
+        supplied = anchor.get("hmac")
+        body = {k: v for k, v in anchor.items() if k != "hmac"}
+        expect = hmac.new(hmac_key.encode("utf-8"),
+                          canonical_json(body).encode("utf-8"),
+                          hashlib.sha256).hexdigest()
+        if not supplied:
+            state["authentic"] = False
+            state["reason"] = state["reason"] or "hmac_missing"
+        else:
+            state["authentic"] = hmac.compare_digest(supplied, expect)
+            if not state["authentic"]:
+                state["reason"] = "hmac_mismatch"
+    if public_key is not None:
+        from .signing import verify_anchor_signature
+
+        state["signature_alg"] = "ed25519"
+        state["ed25519_ok"] = verify_anchor_signature(anchor, public_key)
+        if not state["ed25519_ok"]:
+            state["authentic"] = False
+            state["reason"] = state["reason"] or "ed25519_mismatch"
+    return state
+
+
+def _final_status(result: dict[str, Any], *, strict: bool, terminal: bool,
+                  task_status: str | None, kinds: list[str | None],
+                  hmac_key: str | None, public_key: Any | None) -> str:
+    if not result["chain_ok"] or not result["sequence_ok"]:
+        return "FAILED"
+    if result["completeness_ok"] is False or result["cleanup_ok"] is False:
+        return "INCOMPLETE"
+    if strict and terminal:
+        if result["anchor_ok"] is not True:
+            return "INCOMPLETE" if result["anchor_ok"] is not False else "FAILED"
+        if (result["cleanup_ok"] is not True and task_status != "interrupted"
+                and not (task_status in ("failed", "cancelled")
+                         and "sandbox.created" not in kinds)):
+            return "INCOMPLETE"
+        if hmac_key and result["authentic"] is not True:
+            return "FAILED"
+        if public_key is not None and result["ed25519_ok"] is not True:
+            return "FAILED"
+        return "VERIFIED"
+    if result["anchor_ok"] is False or result["authentic"] is False:
+        return "FAILED"
+    return "VERIFIED"
+
+
 def verify_trace_file(
     path: str | Path,
     *,
@@ -171,98 +275,15 @@ def verify_trace_file(
 
     kinds = [ev.get("event") for ev in events]
     last = kinds[-1] if kinds else None
-    if last == "sandbox.destroy.unverified":
-        result["cleanup_ok"] = False
-    elif last == "sandbox.destroy.confirmed":
-        result["cleanup_ok"] = True
-    elif last == "sandbox.destroyed":
-        # Legacy event only proves that a destroy was attempted. Strict
-        # verification must not turn it into a confirmed cleanup.
-        result["cleanup_ok"] = None
-    if task_status == "completed":
-        result["completeness_ok"] = bool(
-            "task.completed" in kinds and last in ("sandbox.destroy.confirmed", "sandbox.destroyed")
-        )
-    elif task_status == "failed":
-        result["completeness_ok"] = bool(
-            "task.failed" in kinds
-            or ("task.completed" in kinds and last == "sandbox.destroy.unverified")
-        )
-    elif task_status == "cancelled":
-        result["completeness_ok"] = bool(
-            "task.cancelled" in kinds
-            and ("sandbox.created" not in kinds or last == "sandbox.destroy.confirmed")
-        )
-    elif task_status == "interrupted":
-        # Recovery proves the interruption; a confirmed cleanup is nice but not
-        # required because the crashed process never got to write it.
-        result["completeness_ok"] = "task.interrupted" in kinds
+    result["cleanup_ok"] = _cleanup_state(kinds, last)
+    result["completeness_ok"] = _completeness_state(task_status, kinds, last)
 
-    anchor_present = bool(anchor_path) and Path(anchor_path).exists()
-    if anchor_path is not None and not anchor_present:
-        result["anchor_ok"] = False
-        result["reason"] = "anchor_missing"
-    elif anchor_present:
-        try:
-            anchor = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            result["anchor_ok"] = False
-            result["reason"] = "anchor_malformed"
-        else:
-            anchor_ok = (
-                anchor.get("events") == len(events)
-                and anchor.get("final_hash") == result["final_hash"]
-            )
-            result["anchor_ok"] = anchor_ok
-            if not anchor_ok:
-                result["reason"] = "anchor_mismatch"
-            if hmac_key:
-                supplied = anchor.get("hmac")
-                body = {k: v for k, v in anchor.items() if k != "hmac"}
-                expect = hmac.new(hmac_key.encode("utf-8"),
-                                  canonical_json(body).encode("utf-8"),
-                                  hashlib.sha256).hexdigest()
-                if not supplied:
-                    result["authentic"] = False
-                    result["reason"] = result["reason"] or "hmac_missing"
-                else:
-                    result["authentic"] = hmac.compare_digest(supplied, expect)
-                    if not result["authentic"]:
-                        result["reason"] = "hmac_mismatch"
-            else:
-                result["authentic"] = None
-            if public_key is not None:
-                from .signing import verify_anchor_signature
-
-                result["signature_alg"] = "ed25519"
-                result["ed25519_ok"] = verify_anchor_signature(anchor, public_key)
-                if not result["ed25519_ok"]:
-                    result["authentic"] = False
-                    result["reason"] = result["reason"] or "ed25519_mismatch"
-
-    if not result["chain_ok"] or not result["sequence_ok"]:
-        result["status"] = "FAILED"
-    elif result["completeness_ok"] is False:
-        result["status"] = "INCOMPLETE"
-    elif result["cleanup_ok"] is False:
-        result["status"] = "INCOMPLETE"
-    elif strict and terminal:
-        if anchor_path is None or result["anchor_ok"] is not True:
-            result["status"] = "INCOMPLETE" if result["anchor_ok"] is not False else "FAILED"
-        elif (result["cleanup_ok"] is not True and task_status != "interrupted"
-              and not (task_status in ("failed", "cancelled")
-                       and "sandbox.created" not in kinds)):
-            result["status"] = "INCOMPLETE"
-        elif hmac_key and result["authentic"] is not True:
-            result["status"] = "FAILED"
-        elif public_key is not None and result["ed25519_ok"] is not True:
-            result["status"] = "FAILED"
-        else:
-            result["status"] = "VERIFIED"
-    elif result["anchor_ok"] is False or result["authentic"] is False:
-        result["status"] = "FAILED"
-    else:
-        result["status"] = "VERIFIED"
+    result.update(_anchor_state(anchor_path, len(events), result["final_hash"],
+                                hmac_key, public_key))
+    result["status"] = _final_status(
+        result, strict=strict, terminal=terminal, task_status=task_status,
+        kinds=kinds, hmac_key=hmac_key, public_key=public_key,
+    )
 
     # VERIFIED means content plus a verified signature. Unsigned traces are
     # content-consistent but must not claim signature provenance.

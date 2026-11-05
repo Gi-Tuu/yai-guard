@@ -200,6 +200,115 @@ def _fail(
     return result
 
 
+def _verify_identity(bundle: dict[str, Any], events: list[dict[str, Any]],
+                     result: dict[str, Any]) -> tuple[dict[str, Any] | None,
+                                                     str | None, str | None]:
+    trace_ids = {event.get("trace_id") for event in events}
+    task_ids = {event.get("task_id") for event in events}
+    if len(trace_ids) != 1 or None in trace_ids or len(task_ids) != 1 or None in task_ids:
+        return _fail(result, "FAILED", "event_identity_mismatch"), None, None
+    trace_id = next(iter(trace_ids))
+    task_id = next(iter(task_ids))
+    task = bundle.get("task") or {}
+    if task.get("trace_id") != trace_id or task.get("task_id") != task_id:
+        return _fail(result, "FAILED", "task_metadata_mismatch"), None, None
+    if task.get("status") != _infer_status(events):
+        return _fail(result, "FAILED", "task_status_mismatch"), None, None
+    result["metadata_ok"] = True
+    return None, trace_id, task_id
+
+
+def _verify_anchor_signature(bundle: dict[str, Any], events: list[dict[str, Any]],
+                              result: dict[str, Any], trace_id: str,
+                              hmac_key: str | None,
+                              public_key: Any | None) -> dict[str, Any]:
+    final_hash = (bundle.get("trace") or {}).get("final_hash")
+    actual_final_hash = events[-1].get("hash")
+    if not final_hash:
+        return _fail(result, "INCOMPLETE", "missing_final_hash")
+    if final_hash != actual_final_hash:
+        return _fail(result, "FAILED", "final_hash_mismatch")
+    result["final_hash_ok"] = True
+
+    anchor = (bundle.get("trace") or {}).get("anchor")
+    if not anchor:
+        return _fail(result, "INCOMPLETE", "missing_anchor")
+    if anchor.get("trace_id") != trace_id:
+        return _fail(result, "FAILED", "anchor_trace_id_mismatch")
+    if anchor.get("events") != len(events):
+        return _fail(result, "FAILED", "anchor_event_count_mismatch")
+    if anchor.get("final_hash") != actual_final_hash:
+        return _fail(result, "FAILED", "anchor_final_hash_mismatch")
+    result["anchor_ok"] = True
+
+    if hmac_key:
+        supplied = anchor.get("hmac")
+        if not supplied:
+            return _fail(
+                result,
+                "FAILED",
+                "hmac_missing",
+                signature_ok=False,
+                content_ok=True,
+            )
+        body = {key: value for key, value in anchor.items() if key != "hmac"}
+        expected = hmac.new(
+            hmac_key.encode("utf-8"),
+            canonical_json(body).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(supplied, expected):
+            return _fail(
+                result,
+                "FAILED",
+                "hmac_mismatch",
+                signature_ok=False,
+                content_ok=True,
+            )
+        result["signature_ok"] = True
+        result["fully_verified"] = True
+        result["verification_level"] = "signed"
+    else:
+        result["signature_ok"] = None
+        result["verification_level"] = "content_only"
+
+    signature_v2 = anchor.get("signature_v2")
+    if public_key is not None:
+        from .signing import verify_anchor_signature
+
+        result["signature_alg"] = "ed25519"
+        if not signature_v2:
+            return _fail(result, "FAILED", "ed25519_missing",
+                         signature_ok=False, content_ok=True)
+        result["ed25519_ok"] = verify_anchor_signature(anchor, public_key)
+        if not result["ed25519_ok"]:
+            return _fail(result, "FAILED", "ed25519_mismatch",
+                         signature_ok=False, content_ok=True)
+        result["signature_ok"] = True
+        result["fully_verified"] = True
+        result["verification_level"] = "signed"
+    elif signature_v2:
+        from .signing import verify_anchor_signature
+
+        result["signature_alg"] = "ed25519"
+        result["ed25519_ok"] = verify_anchor_signature(anchor)
+        # Embedded key proves self-consistency, not an out-of-band identity.
+        result["verification_level"] = (
+            "signed" if result["signature_ok"] is True else "content_only"
+        )
+
+    result.update(
+        {
+            "status": "VERIFIED" if result["signature_ok"] is True else "CONTENT_VERIFIED",
+            "ok": True,
+            "content_ok": True,
+            "final_hash": actual_final_hash,
+            "anchor": anchor,
+        }
+    )
+    return result
+
+
 def verify_bundle_dict(
     bundle: dict[str, Any], *, hmac_key: str | None = None,
     public_key: Any | None = None,
@@ -238,20 +347,10 @@ def verify_bundle_dict(
     if not chain_ok:
         return _fail(result, "FAILED", reason or "hash_chain_mismatch", bad_seq=bad_seq)
 
-    trace_ids = {event.get("trace_id") for event in events}
-    task_ids = {event.get("task_id") for event in events}
-    if len(trace_ids) != 1 or None in trace_ids or len(task_ids) != 1 or None in task_ids:
-        return _fail(result, "FAILED", "event_identity_mismatch")
-    trace_id = next(iter(trace_ids))
-    task_id = next(iter(task_ids))
-
-    task = bundle.get("task") or {}
-    if task.get("trace_id") != trace_id or task.get("task_id") != task_id:
-        return _fail(result, "FAILED", "task_metadata_mismatch")
+    failure, trace_id, task_id = _verify_identity(bundle, events, result)
+    if failure is not None:
+        return failure
     inferred_status = _infer_status(events)
-    if task.get("status") != inferred_status:
-        return _fail(result, "FAILED", "task_status_mismatch")
-    result["metadata_ok"] = True
 
     kinds = [event.get("event") for event in events]
     terminal_kinds = [k for k in ("task.completed", "task.failed", "task.cancelled",
@@ -376,88 +475,5 @@ def verify_bundle_dict(
             return _fail(result, "FAILED", "execution_metadata_mismatch")
         result["execution_ok"] = True
 
-    final_hash = (bundle.get("trace") or {}).get("final_hash")
-    actual_final_hash = events[-1].get("hash")
-    if not final_hash:
-        return _fail(result, "INCOMPLETE", "missing_final_hash")
-    if final_hash != actual_final_hash:
-        return _fail(result, "FAILED", "final_hash_mismatch")
-    result["final_hash_ok"] = True
-
-    anchor = (bundle.get("trace") or {}).get("anchor")
-    if not anchor:
-        return _fail(result, "INCOMPLETE", "missing_anchor")
-    if anchor.get("trace_id") != trace_id:
-        return _fail(result, "FAILED", "anchor_trace_id_mismatch")
-    if anchor.get("events") != len(events):
-        return _fail(result, "FAILED", "anchor_event_count_mismatch")
-    if anchor.get("final_hash") != actual_final_hash:
-        return _fail(result, "FAILED", "anchor_final_hash_mismatch")
-    result["anchor_ok"] = True
-
-    if hmac_key:
-        supplied = anchor.get("hmac")
-        if not supplied:
-            return _fail(
-                result,
-                "FAILED",
-                "hmac_missing",
-                signature_ok=False,
-                content_ok=True,
-            )
-        body = {key: value for key, value in anchor.items() if key != "hmac"}
-        expected = hmac.new(
-            hmac_key.encode("utf-8"),
-            canonical_json(body).encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(supplied, expected):
-            return _fail(
-                result,
-                "FAILED",
-                "hmac_mismatch",
-                signature_ok=False,
-                content_ok=True,
-            )
-        result["signature_ok"] = True
-        result["fully_verified"] = True
-        result["verification_level"] = "signed"
-    else:
-        result["signature_ok"] = None
-        result["verification_level"] = "content_only"
-
-    signature_v2 = anchor.get("signature_v2")
-    if public_key is not None:
-        from .signing import verify_anchor_signature
-
-        result["signature_alg"] = "ed25519"
-        if not signature_v2:
-            return _fail(result, "FAILED", "ed25519_missing",
-                         signature_ok=False, content_ok=True)
-        result["ed25519_ok"] = verify_anchor_signature(anchor, public_key)
-        if not result["ed25519_ok"]:
-            return _fail(result, "FAILED", "ed25519_mismatch",
-                         signature_ok=False, content_ok=True)
-        result["signature_ok"] = True
-        result["fully_verified"] = True
-        result["verification_level"] = "signed"
-    elif signature_v2:
-        from .signing import verify_anchor_signature
-
-        result["signature_alg"] = "ed25519"
-        result["ed25519_ok"] = verify_anchor_signature(anchor)
-        # Embedded key proves self-consistency, not an out-of-band identity.
-        result["verification_level"] = (
-            "signed" if result["signature_ok"] is True else "content_only"
-        )
-
-    result.update(
-        {
-            "status": "VERIFIED" if result["signature_ok"] is True else "CONTENT_VERIFIED",
-            "ok": True,
-            "content_ok": True,
-            "final_hash": actual_final_hash,
-            "anchor": anchor,
-        }
-    )
-    return result
+    return _verify_anchor_signature(bundle, events, result, trace_id,
+                                    hmac_key, public_key)

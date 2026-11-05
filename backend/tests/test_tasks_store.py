@@ -213,7 +213,7 @@ class TaskStoreTest(unittest.TestCase):
 
     def test_v1_database_migrates_to_v2(self) -> None:
         import sqlite3
-        from app.tasks.store import _migration_v1
+        from app.tasks.schema import _migration_v1
 
         v1_path = pathlib.Path(self.tmp.name) / "v1.db"
         conn = sqlite3.connect(v1_path)

@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from app import data_protection
+from .schema import SCHEMA_VERSION, apply_schema
+from .quotas import QuotaMixin
 from .models import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
@@ -24,115 +26,6 @@ from .models import (
     can_transition,
 )
 
-SCHEMA_VERSION = 5
-
-_TASKS = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id                TEXT PRIMARY KEY,
-    trace_id          TEXT NOT NULL UNIQUE,
-    owner             TEXT NOT NULL,
-    prompt            TEXT NOT NULL,
-    status            TEXT NOT NULL CHECK (status IN (
-        'queued','running','waiting_approval','completed','failed',
-        'cancelled','interrupted'
-    )),
-    summary           TEXT NOT NULL DEFAULT '',
-    error             TEXT,
-    cancel_requested  INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0,1)),
-    created_at        REAL NOT NULL,
-    started_at        REAL,
-    finished_at       REAL,
-    lease_until       REAL,
-    worker_id         TEXT,
-    attempt           INTEGER NOT NULL DEFAULT 0,
-    version           INTEGER NOT NULL DEFAULT 0
-);
-"""
-
-_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_tasks_status_created
-    ON tasks(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_owner
-    ON tasks(owner, created_at);
-"""
-
-_APPROVALS = """
-CREATE TABLE IF NOT EXISTS approvals (
-    task_id      TEXT NOT NULL,
-    call_id      TEXT NOT NULL,
-    owner        TEXT NOT NULL,
-    status       TEXT NOT NULL CHECK (status IN (
-        'pending','approved','rejected','expired','cancelled'
-    )),
-    created_at   REAL NOT NULL,
-    expires_at   REAL NOT NULL,
-    resolved_at  REAL,
-    PRIMARY KEY (task_id, call_id)
-);
-"""
-
-_EVENTS = """
-CREATE TABLE IF NOT EXISTS task_events (
-    task_id     TEXT NOT NULL,
-    seq         INTEGER NOT NULL,
-    event_json  TEXT NOT NULL,
-    created_at  REAL NOT NULL,
-    PRIMARY KEY (task_id, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_task_events_task_seq
-    ON task_events(task_id, seq);
-"""
-
-_LIMITS = """
-CREATE TABLE IF NOT EXISTS rate_hits (
-    key  TEXT NOT NULL,
-    ts   REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_rate_hits_key_ts ON rate_hits(key, ts);
-CREATE TABLE IF NOT EXISTS sse_leases (
-    token       TEXT PRIMARY KEY,
-    created_at  REAL NOT NULL
-);
-"""
-
-
-def _migration_v1(conn: sqlite3.Connection) -> None:
-    conn.execute(_TASKS)
-    conn.execute(_APPROVALS)
-    conn.executescript(_INDEXES)
-
-
-def _migration_v2(conn: sqlite3.Connection) -> None:
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
-    if "updated_at" not in columns:
-        conn.execute("ALTER TABLE tasks ADD COLUMN updated_at REAL")
-    conn.execute(
-        "UPDATE tasks SET updated_at = COALESCE(finished_at, started_at, created_at)"
-    )
-
-
-def _migration_v3(conn: sqlite3.Connection) -> None:
-    conn.executescript(_EVENTS)
-
-
-def _migration_v4(conn: sqlite3.Connection) -> None:
-    conn.executescript(_LIMITS)
-
-
-def _migration_v5(conn: sqlite3.Connection) -> None:
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_hits_ts ON rate_hits(ts)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sse_leases_created "
-        "ON sse_leases(created_at)"
-    )
-
-
-# Ordered migration steps. Add a new function and bump SCHEMA_VERSION for any
-# future schema change; never edit an already-released step.
-_MIGRATIONS = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3,
-               4: _migration_v4, 5: _migration_v5}
-
-
 class TaskAlreadyExists(RuntimeError):
     pass
 
@@ -141,7 +34,7 @@ class TaskNotFound(KeyError):
     pass
 
 
-class TaskStore:
+class TaskStore(QuotaMixin):
     """Thread-safe SQLite task store.
 
     A single connection is used by the app process; WAL keeps readers cheap.
@@ -184,17 +77,7 @@ class TaskStore:
     # ---------------------------------------------------------------- schema
     def _migrate(self) -> None:
         with self._lock, self._conn:
-            version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
-            if version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"task store schema {version} is newer than supported {SCHEMA_VERSION}"
-                )
-            for target in range(version + 1, SCHEMA_VERSION + 1):
-                migration = _MIGRATIONS.get(target)
-                if migration is None:
-                    raise RuntimeError(f"missing task store migration {target}")
-                migration(self._conn)
-                self._conn.execute(f"PRAGMA user_version={target}")
+            apply_schema(self._conn)
 
     def close(self) -> None:
         with self._lock:
@@ -705,53 +588,6 @@ class TaskStore:
                 (task_id,),
             ).fetchone()
         return int(row["n"]) if row else 0
-
-    def rate_limit(self, key: str, *, limit: int, window_s: float,
-                   now: float | None = None) -> int:
-        """Return 0 when allowed, otherwise Retry-After seconds."""
-        current = time.time() if now is None else now
-        with self._lock, self._conn:
-            # Drop expired rows for every key, not only the current client:
-            # one-off IPs would otherwise accumulate forever in this table.
-            self._conn.execute(
-                "DELETE FROM rate_hits WHERE ts < ?",
-                (current - window_s,),
-            )
-            rows = self._conn.execute(
-                "SELECT ts FROM rate_hits WHERE key = ? ORDER BY ts",
-                (key,),
-            ).fetchall()
-            if len(rows) >= limit:
-                retry = max(1, int(window_s - (current - float(rows[0]["ts"]))))
-                return retry
-            self._conn.execute("INSERT INTO rate_hits (key, ts) VALUES (?, ?)",
-                               (key, current))
-            return 0
-
-    def acquire_sse(self, token: str, *, limit: int, ttl_s: float,
-                    now: float | None = None) -> bool:
-        current = time.time() if now is None else now
-        with self._lock, self._conn:
-            self._conn.execute("DELETE FROM sse_leases WHERE created_at < ?",
-                               (current - ttl_s,))
-            row = self._conn.execute("SELECT COUNT(*) AS n FROM sse_leases").fetchone()
-            if int(row["n"]) >= limit:
-                return False
-            self._conn.execute(
-                "INSERT OR REPLACE INTO sse_leases (token, created_at) VALUES (?, ?)",
-                (token, current),
-            )
-            return True
-
-    def renew_sse(self, token: str, *, now: float | None = None) -> None:
-        current = time.time() if now is None else now
-        with self._lock, self._conn:
-            self._conn.execute("UPDATE sse_leases SET created_at = ? WHERE token = ?",
-                               (current, token))
-
-    def release_sse(self, token: str) -> None:
-        with self._lock, self._conn:
-            self._conn.execute("DELETE FROM sse_leases WHERE token = ?", (token,))
 
     # ------------------------------------------------------------------ stats
     def count_by_status(self) -> dict[str, int]:
