@@ -4,7 +4,9 @@
 
 - Fixed overlapping panels at narrow widths and short viewports by switching the grid to document flow below 980px or 720px height.
 - Added a single-column mobile layout, wrapping header/panel headings, full-width token input, and bounded grow-panel heights.
-- Verified at 1600x900, 1200x600, 1024x768, 900x700, 768x900, 700x700, 390x844, and 320x568 with no horizontal overflow.\n- Released: tag `v0.1.5` at `1cc804a`; app deployed; controller unchanged at `486a1f1`.
+- Verified at 1600x900, 1200x600, 1024x768, 900x700, 768x900, 700x700, 390x844, and 320x568 with no horizontal overflow.
+- Released: tag `v0.1.5` at `1cc804a`; app deployed; controller unchanged at `486a1f1`.
+
 ## 2026-11-05 — v0.1.4 hardening boundaries (previous)
 
 - Windows trace writers now use a lock file + msvcrt byte lock in addition to stale seq/hash checks.
@@ -13,7 +15,9 @@
 - Added key rotation CLI and offline key backup procedure; encrypted task data can be re-encrypted without schema changes.
 - Added operator quiesce protocol: marker file blocks new tasks/claims/retention, backup `--quiesce` waits for active tasks and removes the marker.
 - Added `scripts/soak_test.py` and measured a 20-task soak (P95 23.96s).
-- Tests: 240 (1 skipped).\n- Released: annotated tag `v0.1.4` at `486a1f1`; app/controller deployed; schema v5; health split, metrics, quiesce and Windows trace lock enabled.
+- Tests: 240 (1 skipped).
+- Released: annotated tag `v0.1.4` at `486a1f1`; app/controller deployed; schema v5; health split, metrics, quiesce and Windows trace lock enabled.
+
 ## 2026-11-05 — v0.1.3 second-pass audit remediation (previous)
 
 - Recovery now reconciles a `task.completed + sandbox.destroy.unverified` trace as failed, not completed.
