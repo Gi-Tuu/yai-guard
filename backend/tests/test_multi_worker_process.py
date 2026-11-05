@@ -184,10 +184,18 @@ class MultiWorkerProcessTest(unittest.TestCase):
         recovered = _wait_status(port_b, task_id, "interrupted", timeout=30)
         self.assertEqual(recovered.get("error"), "lease_expired")
 
-        raw = urllib.request.urlopen(
-            f"http://127.0.0.1:{port_b}/api/tasks/{task_id}/trace.jsonl",
-            timeout=10,
-        ).read().decode()
+        # DB recovery and trace append are separate commits/files; wait for the
+        # eventual evidence write so this test does not race maintenance.
+        deadline = time.monotonic() + 10
+        raw = ""
+        while time.monotonic() < deadline:
+            raw = urllib.request.urlopen(
+                f"http://127.0.0.1:{port_b}/api/tasks/{task_id}/trace.jsonl",
+                timeout=10,
+            ).read().decode()
+            if "task.interrupted" in raw:
+                break
+            time.sleep(0.2)
         self.assertIn("task.interrupted", raw)
         verified = _request(port_b, "GET", f"/api/tasks/{task_id}/trace/verify")
         self.assertIn(verified.get("status"), ("CONTENT_VERIFIED", "VERIFIED"))

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-05 — v0.1.8 safety remediation
+
+- Reaper now aborts the whole pass when a task record read fails; a DB error is no longer treated as an unknown task that can delete an active container.
+- Single-process runtime lock is acquired before task recovery; a second process cannot mark the first process's active tasks interrupted.
+- Explicit SQLite failures fail closed in single mode; POST returns 503 instead of falling back to accepted memory tasks.
+- RemoteSandbox HTTP deadlines now follow the command deadline (with transport margin); create/destroy have longer independent deadlines.
+- Multi-worker queue limit check and insert share one SQLite `BEGIN IMMEDIATE` transaction.
+- Quiesce clears `_DISPATCHED_QUEUED` and memory runtime has a post-quiesce requeue path.
+- Invalid Ed25519 key configuration makes `/healthz` non-ok and exposes the error; UI distinguishes VERIFIED/CONTENT_VERIFIED/PENDING/INCOMPLETE.
+- Claims record `claim_semantics: binding-only` and cited exit code; README documents that binding is not semantic proof.
+- Docker tests require explicit `REQUIRE_DOCKER_TESTS=1`; production config guard supports `SANDBOX_REQUIRE_DIGEST/RUNSC`.
+- Tests: 249 (7 skipped).
+- Released: tag `v0.1.8` at `310c348`; app/controller deployed; schema v5.
+
 ## 2026-11-05 — v0.1.7 verification/create_task readability (previous)
 
 - Split the remaining `verify_bundle_dict` blocks into terminal, sandbox/cleanup, policy/approvals, and claims/execution helpers; identity/anchor-signature helpers were already separate.
