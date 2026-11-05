@@ -8,12 +8,19 @@ from __future__ import annotations
 import pathlib
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from app.tasks import ApprovalStatus, TaskAlreadyExists, TaskStatus, TaskStore  # noqa: E402
+from app.tasks import (  # noqa: E402
+    ApprovalStatus,
+    TaskAlreadyExists,
+    TaskQueueFull,
+    TaskStatus,
+    TaskStore,
+)
 
 
 class TaskStoreTest(unittest.TestCase):
@@ -262,6 +269,33 @@ class TaskStoreTest(unittest.TestCase):
         self.assertFalse(self.store.acquire_sse("c", limit=2, ttl_s=300, now=100))
         self.store.release_sse("a")
         self.assertTrue(self.store.acquire_sse("c", limit=2, ttl_s=300, now=101))
+
+
+    def test_queue_limit_is_atomic(self) -> None:
+        barrier = threading.Barrier(2)
+        outcomes: list[str] = []
+        lock = threading.Lock()
+
+        def create(index: int) -> None:
+            barrier.wait(timeout=5)
+            try:
+                self.store.create_task(
+                    task_id=f"q{index}", trace_id=f"tq{index}", owner="u",
+                    prompt="x", max_queued=1,
+                )
+                outcome = "created"
+            except TaskQueueFull:
+                outcome = "full"
+            with lock:
+                outcomes.append(outcome)
+
+        threads = [threading.Thread(target=create, args=(i,)) for i in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(outcomes), ["created", "full"])
+        self.assertEqual(self.store.count_queued(), 1)
 
 
 if __name__ == "__main__":

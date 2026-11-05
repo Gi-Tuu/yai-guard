@@ -172,6 +172,25 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertEqual(res.status_code, 503)
         self.assertFalse(res.json()["ok"])
 
+    def test_healthz_reports_signing_key_load_failure(self) -> None:
+        with mock.patch.object(settings, "TRACE_SIGNING_ERROR", "invalid key"):
+            res = self.client.get("/healthz")
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(res.json()["signing"]["error"], "invalid key")
+
+    def test_sqlite_unavailable_rejects_single_mode_create(self) -> None:
+        service = TaskService(None, error="db down", fatal=True)
+        with mock.patch.object(settings, "TASK_STORE_MODE", "sqlite"), \
+                mock.patch.object(settings, "TASK_RUNTIME_MODE", "single"), \
+                mock.patch.object(settings, "TASK_SERVICE", service), \
+                mock.patch.object(settings, "_RUNTIME_LOCK_OK", True):
+            res = self.client.post(
+                "/api/tasks", json={"task": "must not enter memory"},
+                headers=TOKEN_A,
+            )
+        self.assertEqual(res.status_code, 503)
+        self.assertIn("task store unavailable", res.json()["detail"])
+
     def test_rate_limit_separates_forwarded_clients(self) -> None:
         os.environ["RATE_LIMIT_PER_MIN"] = "1"
         with security._RATE_LOCK:

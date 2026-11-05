@@ -29,6 +29,12 @@ _TOKEN = os.environ.get("SANDBOX_TOKEN", "")
 _IMAGE = os.environ.get("SANDBOX_IMAGE", "yaiguard/sandbox-py:1.0")
 _RUNTIME = os.environ.get("SANDBOX_RUNTIME") or "runc"
 _MAX_FILE_BYTES = int(os.environ.get("SANDBOX_MAX_FILE_BYTES", "2097152"))
+_REQUIRE_DIGEST = os.environ.get("SANDBOX_REQUIRE_DIGEST", "0") == "1"
+_REQUIRE_RUNSC = os.environ.get("SANDBOX_REQUIRE_RUNSC", "0") == "1"
+if _REQUIRE_DIGEST and "@sha256:" not in _IMAGE:
+    raise RuntimeError("SANDBOX_REQUIRE_DIGEST=1 requires SANDBOX_IMAGE with @sha256")
+if _REQUIRE_RUNSC and _RUNTIME != "runsc":
+    raise RuntimeError("SANDBOX_REQUIRE_RUNSC=1 requires SANDBOX_RUNTIME=runsc")
 _backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
 _BACKEND_LOCK = threading.Lock()
 _BACKENDS: dict[str, DockerSandbox] = {}

@@ -18,7 +18,8 @@ class RemoteSandbox:
 
     # ------------------------------------------------------------- lifecycle
     def create(self, task_id: str, limits: Limits) -> dict:
-        payload = self._request("POST", f"/v1/sandbox/{task_id}", limits.to_dict())
+        payload = self._request("POST", f"/v1/sandbox/{task_id}", limits.to_dict(),
+                                timeout_s=max(self.timeout_s, 150.0))
         self._container_id = payload.get("container_id")
         self._image_id = payload.get("image_id")
         self._runtime = payload.get("runtime")
@@ -34,7 +35,8 @@ class RemoteSandbox:
 
     def destroy(self, task_id: str) -> dict:
         """DELETE 必须成功且 Controller 返回 verified=true；失败向上抛，不静默吞掉。"""
-        payload = self._request("DELETE", f"/v1/sandbox/{task_id}")
+        payload = self._request("DELETE", f"/v1/sandbox/{task_id}",
+                                timeout_s=max(self.timeout_s, 60.0))
         if payload.get("verified") is not True:
             raise RuntimeError(f"destroy not verified by controller: {payload}")
         return payload
@@ -59,11 +61,16 @@ class RemoteSandbox:
     # ------------------------------------------------------------------- exec
     def exec(self, task_id: str, command: str, *, timeout_s: int | None = None,
              cwd: str = "/workspace") -> ExecResult:
+        command_timeout = timeout_s or 120
+        # The command is allowed to run for command_timeout; the HTTP request
+        # must not expire first. The margin covers controller scheduling and the
+        # destroy/cleanup path that runs after the command.
+        http_timeout = max(self.timeout_s, float(command_timeout) + 30.0)
         payload = self._request("POST", f"/v1/sandbox/{task_id}/exec", {
             "command": command,
-            "timeout_s": timeout_s or 120,
+            "timeout_s": command_timeout,
             "cwd": cwd,
-        })
+        }, timeout_s=http_timeout)
         return ExecResult(
             stdout=payload.get("stdout", ""),
             stderr=payload.get("stderr", ""),
@@ -103,7 +110,8 @@ class RemoteSandbox:
             return {}
 
     # ---------------------------------------------------------------- helpers
-    def _request(self, method: str, path: str, body: dict | bytes | None = None, *, raw: bool = False):
+    def _request(self, method: str, path: str, body: dict | bytes | None = None, *,
+                 raw: bool = False, timeout_s: float | None = None):
         data = None
         headers = {"X-Sandbox-Token": self.token}
         if body is not None:
@@ -115,13 +123,18 @@ class RemoteSandbox:
                 headers["Content-Type"] = "application/json"
 
         request = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
+        request_timeout = max(self.timeout_s, timeout_s or 0.0)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 payload = json.loads(response.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"sandbox controller HTTP {exc.code}: {exc.read()[:200]!r}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"sandbox controller unreachable: {exc.reason}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise RuntimeError(
+                f"sandbox controller request timed out/unreachable "
+                f"after {request_timeout:.1f}s: {reason}"
+            ) from exc
         if payload.get("ok") is False:
             raise RuntimeError(f"sandbox controller error: {payload}")
         return payload

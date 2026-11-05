@@ -7,6 +7,9 @@
 #   BIND_IP=127.0.0.1
 #   SANDBOX_RUNTIME=runc
 #   SANDBOX_IMAGE=yaiguard/sandbox-py:1.0
+#   SANDBOX_REQUIRE_DIGEST=0
+# Production: use runsc, an @sha256 image, and SANDBOX_REQUIRE_DIGEST=1.
+# Also put the controller behind an SSH tunnel or mTLS; VPC HTTP is not TLS.
 #   CONTROLLER_NAME=deploy-controller-1
 #
 # Run on the sandbox host from any directory:

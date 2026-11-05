@@ -14,6 +14,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from app.containment import run_containment
 from app import maintenance, quiesce, security, settings, task_state, task_runner
 from app.tasks import ApprovalStatus
+from app.tasks.store import TaskQueueFull
 from app.trace import new_trace_id, verify_trace_file
 from app.trace.bundle import build_bundle
 
@@ -74,7 +75,8 @@ def healthz() -> JSONResponse:
     )
     ok = bool(sandbox.get("ok")) and trace_ok and model_ok
     task_store = settings.TASK_SERVICE.health()
-    ok = ok and bool(task_store.get("ok")) and settings._RUNTIME_LOCK_OK
+    ok = (ok and bool(task_store.get("ok")) and settings._RUNTIME_LOCK_OK
+          and settings.TRACE_SIGNING_ERROR is None)
     payload = {
         "ok": ok,
         "version": settings.APP_VERSION,
@@ -99,6 +101,7 @@ def healthz() -> JSONResponse:
         "signing": {
             "alg": "ed25519" if settings.TRACE_ED25519_PUBLIC is not None else None,
             "configured": settings.TRACE_ED25519_PUBLIC is not None,
+            "error": settings.TRACE_SIGNING_ERROR,
         },
     }
     return JSONResponse(payload, status_code=200 if ok else 503)
@@ -146,12 +149,14 @@ def get_policy() -> dict[str, Any]:
 
 def _create_multi_task(task_id: str, trace_id: str, task: str,
                        principal: str, state: task_state.TaskState) -> dict[str, Any]:
-    if settings.TASK_SERVICE.count_queued() >= settings.TASK_QUEUE_MAX:
+    try:
+        created = settings.TASK_SERVICE.create(
+            task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
+            max_queued=settings.TASK_QUEUE_MAX,
+        )
+    except TaskQueueFull:
         raise HTTPException(status_code=429, detail="task queue is full",
                             headers={"Retry-After": "10"})
-    created = settings.TASK_SERVICE.create(
-        task_id=task_id, trace_id=trace_id, owner=principal, prompt=task,
-    )
     if settings.TASK_SERVICE.enabled and created is None:
         raise HTTPException(status_code=503,
                             detail="task store unavailable; task was not queued")
@@ -207,6 +212,9 @@ def create_task(body: dict[str, Any], request: Request,
     if settings.TASK_RUNTIME_MODE == "multi" and not settings.TASK_SERVICE.enabled:
         raise HTTPException(status_code=503,
                             detail="multi-worker mode requires TASK_STORE=sqlite")
+    if settings.TASK_STORE_MODE == "sqlite" and not settings.TASK_SERVICE.enabled:
+        raise HTTPException(status_code=503,
+                            detail="task store unavailable; task was not queued")
     if (settings.TASK_RUNTIME_MODE == "single" and settings.TASK_SERVICE.enabled
             and not settings._RUNTIME_LOCK_OK):
         raise HTTPException(status_code=503,

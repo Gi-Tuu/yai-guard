@@ -76,6 +76,8 @@ def _validate_claims(
             "evidence_seq": seq,
             "evidence_argv": argv,
             "evidence_stdout_sha256": stdout_sha,
+            "evidence_exit_code": expected.get("exit_code"),
+            "evidence_timed_out": expected.get("timed_out"),
         })
     return validated, None
 
@@ -194,10 +196,11 @@ def run_agent(
                     summary=response.content,
                     steps=step,
                 )
-                record(actor="agent", event="task.completed",
-                       payload={"summary": response.content, "steps": step,
-                                "claims": [], "claims_verified": False,
-                                "claims_required": bool(require_claims and exec_seqs)})
+                record(actor="agent", event="task.completed", payload={
+                    "summary": response.content, "steps": step,
+                    "claims": [], "claims_verified": False,
+                    "claim_binding": "none",
+                    "claims_required": bool(require_claims and exec_seqs)})
                 return run_result
 
             messages.append({
@@ -268,6 +271,8 @@ def run_agent(
                         "argv": argv,
                         "stdout_sha256": exec_meta.get("stdout_sha256"),
                         "stderr_sha256": exec_meta.get("stderr_sha256"),
+                        "exit_code": exec_meta.get("exit_code"),
+                        "timed_out": bool(exec_meta.get("timed_out")),
                     }
                     result["evidence_seq"] = exec_event["seq"]
                     killed = exec_meta.get("killed_reason")
@@ -311,6 +316,8 @@ def run_agent(
                         "claims_verified": bool(claims),
                         "claims_required": bool(require_claims and exec_seqs),
                         "claim_binding": "argv+sha256",
+                        "claim_semantics": "binding-only: references real execution; "
+                                           "does not prove the natural-language claim",
                     })
                     run_result = RunResult(
                         "completed",

@@ -12,7 +12,7 @@ from typing import Any
 from app.policy import PolicyEngine
 from app.tasks import TaskService
 
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -35,44 +35,16 @@ if TASK_RUNTIME_MODE == "multi":
     TASK_EVENT_STORE = "db"
     TASK_APPROVAL_STORE = "db"
 
-TASK_SERVICE = (
-    TaskService.from_path(ARTIFACTS / "tasks.db",
-                          recover=(TASK_RUNTIME_MODE != "multi"))
-    if TASK_STORE_MODE == "sqlite"
-    else TaskService()
-)
-POLICY = PolicyEngine.from_file()
-
-
-def _load_trace_signing_key() -> Any | None:
-    path = os.environ.get("TRACE_ED25519_PRIVATE_KEY_FILE")
-    if not path:
-        return None
-    try:
-        from app.trace.signing import load_private_key
-
-        return load_private_key(path)
-    except Exception:  # noqa: BLE001 - unsigned mode remains available
-        return None
-
-
-TRACE_ED25519_KEY = _load_trace_signing_key()
-TRACE_ED25519_PUBLIC = (
-    TRACE_ED25519_KEY.public_key() if TRACE_ED25519_KEY is not None else None
-)
-
-# Durable task runtime is single-writer by design. An advisory file lock makes
-# a second uvicorn worker/process fail closed instead of double-executing tasks.
+# Durable task runtime is single-writer by design. Acquire the exclusive lock
+# BEFORE constructing/recovering TaskService: a second process must not mutate
+# the first process's active tasks just because it later fails to get the lock.
 _RUNTIME_LOCK_HANDLE: Any | None = None
-_MAINTENANCE_LOCK_HANDLE: Any | None = None
 _RUNTIME_LOCK_OK = True
 
 
 def _acquire_runtime_lock() -> bool:
     global _RUNTIME_LOCK_HANDLE
-    if TASK_RUNTIME_MODE == "multi":
-        return True
-    if not TASK_SERVICE.enabled:
+    if TASK_RUNTIME_MODE == "multi" or TASK_STORE_MODE != "sqlite":
         return True
     try:
         import fcntl
@@ -89,6 +61,38 @@ def _acquire_runtime_lock() -> bool:
 
 _RUNTIME_LOCK_OK = _acquire_runtime_lock()
 
+TASK_SERVICE = (
+    TaskService.from_path(ARTIFACTS / "tasks.db",
+                          recover=(TASK_RUNTIME_MODE != "multi" and _RUNTIME_LOCK_OK))
+    if TASK_STORE_MODE == "sqlite"
+    else TaskService()
+)
+POLICY = PolicyEngine.from_file()
+
+
+TRACE_SIGNING_ERROR: str | None = None
+
+
+def _load_trace_signing_key() -> Any | None:
+    global TRACE_SIGNING_ERROR
+    path = os.environ.get("TRACE_ED25519_PRIVATE_KEY_FILE")
+    if not path:
+        return None
+    try:
+        from app.trace.signing import load_private_key
+
+        return load_private_key(path)
+    except Exception as exc:  # noqa: BLE001 - expose failure instead of silently signing-less
+        TRACE_SIGNING_ERROR = f"{type(exc).__name__}: {exc}"
+        return None
+
+
+TRACE_ED25519_KEY = _load_trace_signing_key()
+TRACE_ED25519_PUBLIC = (
+    TRACE_ED25519_KEY.public_key() if TRACE_ED25519_KEY is not None else None
+)
+
+
 # Concurrency / queue / lease.
 TASK_CONCURRENCY = max(1, int(os.environ.get("TASK_CONCURRENCY", "1")))
 TASK_WORKERS = max(1, int(os.environ.get("TASK_WORKERS", str(TASK_CONCURRENCY))))
@@ -103,6 +107,7 @@ TASK_HEARTBEAT_SECONDS = max(
 SSE_MAX_CONNECTIONS = int(os.environ.get("SSE_MAX_CONNECTIONS", "8"))
 RATE_WINDOW_S = 60.0
 _MISSING = object()
+
 
 
 

@@ -240,6 +240,48 @@ def _record_interrupted_events() -> list[str]:
     return recorded
 
 
+def _requeue_memory_tasks() -> dict[str, Any]:
+    """Recover queued in-memory tasks after a quiesce marker is removed.
+
+    The memory runtime has no DB queue to redispatch from, so a task whose
+    dispatch was cleared by quiesce must be picked up here.
+    """
+    summary: dict[str, Any] = {"requeued": [], "cancelled": [], "skipped": []}
+    with task_state._LOCK:
+        candidates = [
+            state for state in task_state.TASKS.values()
+            if state.status == "queued"
+        ]
+    for state in candidates:
+        with task_state._DISPATCH_LOCK:
+            if state.task_id in task_state._DISPATCHED_QUEUED:
+                summary["skipped"].append(
+                    {"task_id": state.task_id, "reason": "already_dispatched"},
+                )
+                continue
+            task_state._DISPATCHED_QUEUED.add(state.task_id)
+        if not task_state._reserve_queue_slot():
+            with task_state._DISPATCH_LOCK:
+                task_state._DISPATCHED_QUEUED.discard(state.task_id)
+            summary["skipped"].append(
+                {"task_id": state.task_id, "reason": "queue_full"},
+            )
+            continue
+        try:
+            task_state._TASK_EXECUTOR.submit(run_task, state)
+        except Exception as exc:  # noqa: BLE001
+            task_state._release_queue_slot()
+            with task_state._DISPATCH_LOCK:
+                task_state._DISPATCHED_QUEUED.discard(state.task_id)
+            summary["skipped"].append({
+                "task_id": state.task_id,
+                "reason": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        summary["requeued"].append(state.task_id)
+    return summary
+
+
 def _requeue_queued_tasks() -> dict[str, Any]:
     """Re-dispatch queued tasks; dispatched-but-not-started ones are not duplicated."""
     summary: dict[str, Any] = {"requeued": [], "cancelled": [], "skipped": []}
@@ -247,8 +289,7 @@ def _requeue_queued_tasks() -> dict[str, Any]:
         summary["skipped"].append("quiesced")
         return summary
     if not settings.TASK_SERVICE.enabled:
-        summary["skipped"].append("task store disabled")
-        return summary
+        return _requeue_memory_tasks()
     if os.environ.get("REQUEUE_ON_STARTUP", "1") == "0":
         summary["skipped"].append("disabled_by_env")
         return summary
@@ -374,6 +415,8 @@ def start_background_tasks() -> None:
     """Startup dispatcher; no route or app object is needed here."""
     if not settings._RUNTIME_LOCK_OK:
         return
+    if settings.TASK_STORE_MODE == "sqlite" and settings.TASK_SERVICE.fatal:
+        return
     _start_state_pruner()
     if settings.TASK_SERVICE.enabled and settings.TASK_RUNTIME_MODE == "multi":
         _start_multi_runtime()
@@ -384,4 +427,8 @@ def start_background_tasks() -> None:
         _start_single_runtime()
         return
     _start_fake_runtime()
+    if os.environ.get("REQUEUE_ON_STARTUP", "1") != "0" and not _REQUEUE_STARTED:
+        _REQUEUE_STARTED = True
+        threading.Thread(target=_requeue_loop, name="queued-requeue",
+                         daemon=True).start()
 

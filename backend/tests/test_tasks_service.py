@@ -26,7 +26,8 @@ class TaskServiceTest(unittest.TestCase):
             task_id="tk", trace_id="tr", owner="u", prompt="ls",
         ))
         self.assertEqual(service.health(), {
-            "ok": True, "mode": "memory", "degraded": False, "error": None,
+            "ok": True, "mode": "memory", "degraded": False,
+            "fatal": False, "error": None,
         })
 
     def test_sqlite_creates_and_persists(self) -> None:

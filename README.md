@@ -20,6 +20,12 @@ Finish claims are evidence-bound: every `finish` claim must cite a real `sandbox
 sequence plus that execution's `argv` and stdout SHA-256; the loop rejects a claim that
 points at anything else, and the evidence verifier checks the same binding offline.
 
+Binding is not semantic proof. A claim can cite a real command that exited non-zero;
+the trace records `claim_semantics: "binding-only"` and the cited `evidence_exit_code`
+so reviewers can see that the reference is real without treating the natural-language
+claim as verified. The UI shows `VERIFIED` (pinned signature), `CONTENT_VERIFIED`
+(content chain only), `PENDING`, and `INCOMPLETE` separately.
+
 The reviewer does not need the original API, the model, or the agent process to check the result.
 
 ---
@@ -44,7 +50,8 @@ Browser
   │ HTTPS
   ▼
 App host ── FastAPI / policy / trace / approval UI
-  │ encrypted channel
+  │ private VPC HTTP + shared token
+  │ (production should add SSH tunnel or mTLS; see docs/17)
   ▼
 Sandbox host ── controller ── Docker
                               └── one-shot sandbox container
@@ -102,7 +109,7 @@ surfaced as degraded health instead of breaking task creation.
 | No host execution in the app process | Execution is only reachable through the sandbox controller |
 | No Docker socket in the app | Controller and daemon live on the sandbox host |
 | Sandbox runtime | Production uses gVisor `runsc` (ptrace platform); runc remains the fallback |
-| Pinned sandbox image | Controller runs the image by its `@sha256` digest, not only a mutable tag |
+| Pinned sandbox image | Production deployments pin the image by `@sha256`; controller can enforce it with `SANDBOX_REQUIRE_DIGEST=1` |
 | Deterministic policy | Rules return allow / deny / require-approval with a stable rule id |
 | Human approval | Approval is a strict JSON boolean; duplicates and cross-owner access are rejected |
 | Bounded execution | Per-stream and total output limits; timeout/output overflow kills the process group and container |

@@ -188,6 +188,11 @@ class RunContext:
 def _prepare_run(state: TaskState, *, already_claimed: bool,
                  slot_held: bool) -> RunContext | None:
     if quiesce.is_quiesced() and not already_claimed:
+        # A queued task may have been marked dispatched by the route before the
+        # marker appeared. Remove that marker, otherwise the post-quiesce
+        # requeue loop will skip the task forever.
+        with task_state._DISPATCH_LOCK:
+            task_state._DISPATCHED_QUEUED.discard(state.task_id)
         task_state._release_queue_slot()
         return None
     if not already_claimed:

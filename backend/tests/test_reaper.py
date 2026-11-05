@@ -99,6 +99,18 @@ class ReaperTest(unittest.TestCase):
         result = reap_orphans(service, FakeSandbox([self._container("x")]), now=self.now)
         self.assertEqual(result["skipped_reason"], "task store disabled")
 
+    def test_database_read_error_aborts_without_destroy(self) -> None:
+        class FaultyService(FakeService):
+            def get_record(self, task_id):
+                raise OSError("database is unavailable")
+
+        sandbox = FakeSandbox([self._container("tk_active")])
+        result = reap_orphans(FaultyService(), sandbox, now=self.now)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(sandbox.destroyed, [])
+        self.assertTrue(any("read failed" in error for error in result["errors"]))
+
 
 if __name__ == "__main__":
     unittest.main()

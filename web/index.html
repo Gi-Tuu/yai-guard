@@ -14,7 +14,7 @@
   </div>
   <div class="header-right">
     <span class="chip" id="policy-chip">policy …</span>
-    <span class="status" id="status">idle</span>
+    <span class="status" id="status" aria-live="polite">idle</span>
   </div>
 </header>
 
@@ -25,12 +25,12 @@
         <h2>Task</h2>
         <span class="hint">Coding task → real execution → offline evidence</span>
       </div>
-      <textarea id="task" placeholder="Example: create main.py that computes 1+1, run it, then try rm -rf /, and summarize the real output"></textarea>
+      <textarea id="task" aria-label="Task prompt" placeholder="Example: create main.py that computes 1+1, run it, then try rm -rf /, and summarize the real output"></textarea>
       <div class="row">
         <button id="submit">Run Task</button>
         <button class="ghost" id="demo">Load demo task</button>
-        <input id="token" class="token" type="password" placeholder="X-Demo-Token (required for public demo)" autocomplete="off" />
-        <span class="hint" id="task-hint"></span>
+        <input id="token" class="token" type="password" aria-label="Demo access token" placeholder="X-Demo-Token (required for public demo)" autocomplete="off" />
+        <span class="hint" id="task-hint" aria-live="polite"></span>
       </div>
       <div class="hint">Public demo requires the access token provided with the demo link.</div>
     </div>
@@ -40,7 +40,7 @@
         <h2>Execution Timeline</h2>
         <span class="hint" id="timeline-count">0 events</span>
       </div>
-      <div id="timeline" class="timeline">
+      <div id="timeline" class="timeline" aria-live="polite">
         <div class="empty">Submit a task to see model planning, policy decisions, sandbox execution, and approvals grouped by step.</div>
       </div>
     </div>
@@ -83,7 +83,7 @@
         <button class="ghost" id="trace-download" disabled>Download trace.jsonl</button>
         <button class="ghost" id="trace-verify" disabled>Verify integrity</button>
         <button class="ghost" id="evidence-download" disabled>Download evidence bundle</button>
-        <span class="badge" id="verify-badge">not verified</span>
+        <span class="badge" id="verify-badge" aria-live="polite">not verified</span>
       </div>
       <div class="trace-wrap">
         <table class="trace" id="trace-table">

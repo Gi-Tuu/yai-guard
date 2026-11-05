@@ -56,7 +56,18 @@ def reap_orphans(
             result["kept"].append({"task_id": task_id, "reason": "within_grace"})
             continue
 
-        record = task_service.get_record(task_id)
+        try:
+            reader = getattr(task_service, "get_record_strict", None)
+            record = (reader(task_id) if reader is not None
+                      else task_service.get_record(task_id))
+        except Exception as exc:  # noqa: BLE001
+            # A failed read is not evidence that the task is unknown. Stop the
+            # whole pass; deleting an active sandbox is worse than deferring GC.
+            result["ok"] = False
+            result["errors"].append(
+                f"{task_id}: task record read failed: {type(exc).__name__}: {exc}"
+            )
+            return result
         reason: str | None = None
         if record is None:
             reason = "unknown_task"

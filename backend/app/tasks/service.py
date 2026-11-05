@@ -11,15 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from .models import ApprovalStatus, TaskRecord, TaskStatus
-from .store import TaskAlreadyExists, TaskStore
+from .store import TaskAlreadyExists, TaskQueueFull, TaskStore
 
 
 class TaskService:
     def __init__(self, store: TaskStore | None = None, *, error: str | None = None,
-                 recover: bool = True) -> None:
+                 recover: bool = True, fatal: bool = False) -> None:
         self.store = store
         self.mode = "sqlite" if store is not None else "memory"
         self._error = error
+        self._fatal = fatal
         self._degraded = store is None and error is not None
         if store is not None and recover:
             try:
@@ -36,12 +37,16 @@ class TaskService:
             return cls()
         try:
             return cls(TaskStore(path), recover=recover)
-        except Exception as exc:  # noqa: BLE001 - fall back to memory + degraded health
-            return cls(None, error=f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - explicit sqlite mode must fail closed
+            return cls(None, error=f"{type(exc).__name__}: {exc}", fatal=True)
 
     @property
     def enabled(self) -> bool:
         return self.store is not None
+
+    @property
+    def fatal(self) -> bool:
+        return self._fatal
 
     @property
     def degraded(self) -> bool:
@@ -70,13 +75,17 @@ class TaskService:
 
     # ---------------------------------------------------------------- writes
     def create(self, *, task_id: str, trace_id: str, owner: str, prompt: str,
-               now: float | None = None) -> TaskRecord | None:
+               now: float | None = None,
+               max_queued: int | None = None) -> TaskRecord | None:
         if self.store is None:
             return None
         try:
             return self.store.create_task(
-                task_id=task_id, trace_id=trace_id, owner=owner, prompt=prompt, now=now
+                task_id=task_id, trace_id=trace_id, owner=owner, prompt=prompt,
+                now=now, max_queued=max_queued,
             )
+        except TaskQueueFull:
+            raise
         except TaskAlreadyExists:
             return None
         except Exception as exc:  # noqa: BLE001
@@ -384,6 +393,16 @@ class TaskService:
             self._mark_degraded(exc)
             return None
 
+    def get_record_strict(self, task_id: str) -> TaskRecord | None:
+        """Read a record for destructive callers: never turn DB errors into None."""
+        if self.store is None:
+            raise RuntimeError("task store is disabled")
+        try:
+            return self.store.get_task(task_id)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_degraded(exc)
+            raise
+
     def pending_approvals(self, task_id: str | None = None) -> list[dict[str, Any]]:
         if self.store is None:
             return []
@@ -400,6 +419,7 @@ class TaskService:
             "ok": not self._degraded,
             "mode": self.mode,
             "degraded": self._degraded,
+            "fatal": self._fatal,
             "error": self._error,
         }
 

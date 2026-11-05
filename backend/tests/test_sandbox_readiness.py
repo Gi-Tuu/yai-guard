@@ -71,7 +71,8 @@ class RemoteDestroyTest(unittest.TestCase):
         from app.sandbox.remote_backend import RemoteSandbox
 
         class BadRemote(RemoteSandbox):
-            def _request(self, method, path, body=None, *, raw=False):
+            def _request(self, method, path, body=None, *, raw=False,
+                         timeout_s=None):
                 return {"ok": True, "verified": False, "error": "still exists"}
 
         with self.assertRaises(RuntimeError):

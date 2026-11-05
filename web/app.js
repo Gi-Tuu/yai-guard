@@ -559,9 +559,13 @@
     try {
       const res = await fetch(`/api/tasks/${state.taskId}/trace/verify`, { headers: tokenHeader() });
       const body = await res.json();
-      if (res.ok && body.ok) {
-        el.textContent = 'OK · ' + body.events + ' events';
-        el.className = 'badge ok';
+      if (body.status) {
+        const status = String(body.status);
+        el.textContent = status + ' · ' + (body.events || 0) + ' events';
+        el.className = status === 'VERIFIED'
+          ? 'badge ok'
+          : (status === 'CONTENT_VERIFIED' || status === 'PENDING'
+            ? 'badge wait' : 'badge bad');
       } else if (body.bad_seq != null) {
         el.textContent = 'TAMPERED at seq ' + body.bad_seq;
         el.className = 'badge bad';

@@ -14,6 +14,7 @@ from app.agent.loop import run_agent  # noqa: E402
 from app.agent.mock_model import ModelResponse  # noqa: E402
 from app.policy import PolicyEngine, ToolCall  # noqa: E402
 from app.sandbox.fake_backend import FakeSandbox  # noqa: E402
+from app.sandbox.interface import ExecResult  # noqa: E402
 from app.trace import TraceStore  # noqa: E402
 
 
@@ -151,6 +152,14 @@ class CorrectionModel(ClaimModel):
         )
 
 
+class FailingSandbox(FakeSandbox):
+    def exec(self, task_id, command, *, timeout_s=None, cwd="/workspace"):
+        return ExecResult(
+            stdout="", stderr="tests failed", exit_code=1, duration_ms=1,
+            timed_out=False, truncated=False, killed_reason=None,
+        )
+
+
 class ClaimEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -177,6 +186,26 @@ class ClaimEvidenceTest(unittest.TestCase):
         self.assertTrue(completed["payload"]["claims_verified"])
         exec_seq = next(e["seq"] for e in events if e["event"] == "sandbox.exec")
         self.assertEqual(completed["payload"]["claims"][0]["evidence_seq"], exec_seq)
+
+    def test_failed_command_claim_is_binding_only_not_semantic(self) -> None:
+        # This pins the documented boundary: a claim may cite a real failed
+        # command. Binding proves identity, not that "tests passed" is true.
+        result = run_agent(
+            task="run a failing command",
+            model=ClaimModel(),
+            policy=PolicyEngine.from_file(),
+            sandbox=FailingSandbox(),
+            trace=self.trace,
+            task_id="tk_failed_claim",
+            approver=lambda d, c: True,
+            require_claims=True,
+            max_steps=4,
+        )
+        self.assertEqual(result.status, "completed")
+        completed = next(e for e in self.trace.read() if e["event"] == "task.completed")
+        self.assertTrue(completed["payload"]["claims_verified"])
+        self.assertEqual(completed["payload"]["claims"][0]["evidence_exit_code"], 1)
+        self.assertIn("binding-only", completed["payload"]["claim_semantics"])
 
     def test_fake_seq_is_rejected_until_max_steps(self) -> None:
         result = run_agent(

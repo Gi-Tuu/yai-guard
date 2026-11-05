@@ -30,6 +30,10 @@ class TaskAlreadyExists(RuntimeError):
     pass
 
 
+class TaskQueueFull(RuntimeError):
+    pass
+
+
 class TaskNotFound(KeyError):
     pass
 
@@ -128,12 +132,24 @@ class TaskStore(QuotaMixin):
         owner: str,
         prompt: str,
         now: float | None = None,
+        max_queued: int | None = None,
     ) -> TaskRecord:
         if not task_id or not trace_id:
             raise ValueError("task_id and trace_id are required")
         created = time.time() if now is None else now
-        with self._lock, self._conn:
+        with self._lock:
             try:
+                # BEGIN IMMEDIATE serializes the queue-limit check and INSERT
+                # across processes, so concurrent requests cannot both observe
+                # a free slot and exceed TASK_QUEUE_MAX.
+                self._conn.execute("BEGIN IMMEDIATE")
+                if max_queued is not None:
+                    row = self._conn.execute(
+                        "SELECT COUNT(*) AS n FROM tasks WHERE status = ?",
+                        (TaskStatus.QUEUED.value,),
+                    ).fetchone()
+                    if int(row["n"]) >= max_queued:
+                        raise TaskQueueFull("task queue is full")
                 self._conn.execute(
                     "INSERT INTO tasks (id, trace_id, owner, prompt, status, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -141,8 +157,16 @@ class TaskStore(QuotaMixin):
                      data_protection.protect(prompt), TaskStatus.QUEUED.value,
                      created, created),
                 )
+                self._conn.commit()
+            except TaskQueueFull:
+                self._conn.rollback()
+                raise
             except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
                 raise TaskAlreadyExists(f"task/trace already exists: {task_id}") from exc
+            except Exception:
+                self._conn.rollback()
+                raise
         record = self.get_task(task_id)
         assert record is not None
         return record

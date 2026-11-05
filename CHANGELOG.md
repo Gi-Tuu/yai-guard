@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-05 — v0.1.7 verification/create_task readability
+## 2026-11-05 — v0.1.7 verification/create_task readability (previous)
 
 - Split the remaining `verify_bundle_dict` blocks into terminal, sandbox/cleanup, policy/approvals, and claims/execution helpers; identity/anchor-signature helpers were already separate.
 - Split `routes.create_task` into `_create_multi_task` / `_create_single_task`; validation, quiesce and rate-limit ordering unchanged.
@@ -134,4 +134,5 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
 

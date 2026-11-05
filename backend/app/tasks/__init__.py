@@ -14,6 +14,7 @@ from .store import (
     SCHEMA_VERSION,
     TaskAlreadyExists,
     TaskNotFound,
+    TaskQueueFull,
     TaskStore,
 )
 
@@ -24,6 +25,7 @@ __all__ = [
     "ApprovalStatus",
     "TaskAlreadyExists",
     "TaskNotFound",
+    "TaskQueueFull",
     "TaskRecord",
     "TaskService",
     "TaskStatus",

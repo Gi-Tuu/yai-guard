@@ -51,12 +51,17 @@ def _image_available() -> bool:
 
 DOCKER = _docker_available()
 IMAGE_READY = _image_available()
-SKIP_REASON = "docker daemon unavailable" if not DOCKER else f"image {IMAGE} not built"
-if os.environ.get("REQUIRE_DOCKER_TESTS") == "1" and not IMAGE_READY:
+DOCKER_TESTS_ENABLED = os.environ.get("REQUIRE_DOCKER_TESTS") == "1"
+SKIP_REASON = (
+    "set REQUIRE_DOCKER_TESTS=1 to run shared-Docker tests"
+    if not DOCKER_TESTS_ENABLED
+    else ("docker daemon unavailable" if not DOCKER else f"image {IMAGE} not built")
+)
+if DOCKER_TESTS_ENABLED and not IMAGE_READY:
     raise RuntimeError(f"REQUIRE_DOCKER_TESTS=1 but Docker/image unavailable: {SKIP_REASON}")
 
 
-@unittest.skipUnless(IMAGE_READY, SKIP_REASON)
+@unittest.skipUnless(DOCKER_TESTS_ENABLED and IMAGE_READY, SKIP_REASON)
 class DockerContainmentTest(unittest.TestCase):
     """M1/M2/M3：绕过策略层，直接验证内核/容器边界真的挡住了攻击。"""
 
@@ -131,7 +136,7 @@ class DockerContainmentTest(unittest.TestCase):
         self.assertIn("interfaces ['lo']", result.stdout)
 
 
-@unittest.skipUnless(IMAGE_READY, SKIP_REASON)
+@unittest.skipUnless(DOCKER_TESTS_ENABLED and IMAGE_READY, SKIP_REASON)
 class DockerSandboxBackendTest(unittest.TestCase):
     """通过真实后端跑一遍：验证 DockerSandbox 的文件与执行语义。"""
 

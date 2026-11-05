@@ -14,8 +14,11 @@ services:
     command: ["uvicorn", "app.controller:app", "--host", "0.0.0.0", "--port", "9000"]
     environment:
       SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN}
+      # Development defaults. Production: runsc + @sha256 digest, and optionally
+      # SANDBOX_REQUIRE_DIGEST=1 so a mutable tag cannot start.
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-yaiguard/sandbox-py:1.0}
+      SANDBOX_REQUIRE_DIGEST: ${SANDBOX_REQUIRE_DIGEST:-0}
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID (stat -c '%g' /var/run/docker.sock)}"
     read_only: true
