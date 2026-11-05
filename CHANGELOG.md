@@ -1,6 +1,11 @@
 # Changelog
 
-## 2026-11-05 — v0.1.4 hardening boundaries
+## 2026-11-05 — v0.1.5 responsive UI
+
+- Fixed overlapping panels at narrow widths and short viewports by switching the grid to document flow below 980px or 720px height.
+- Added a single-column mobile layout, wrapping header/panel headings, full-width token input, and bounded grow-panel heights.
+- Verified at 1600x900, 1200x600, 1024x768, 900x700, 768x900, 700x700, 390x844, and 320x568 with no horizontal overflow.
+## 2026-11-05 — v0.1.4 hardening boundaries (previous)
 
 - Windows trace writers now use a lock file + msvcrt byte lock in addition to stale seq/hash checks.
 - Controller `/healthz` is public liveness only; detailed runtime/image status moved to token-protected `/v1/status` and cached.
@@ -109,6 +114,7 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
 
 
 
