@@ -5,6 +5,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -14,6 +15,12 @@ from app.agent.mock_model import ModelResponse  # noqa: E402
 from app.policy import PolicyEngine, ToolCall  # noqa: E402
 from app.sandbox.fake_backend import FakeSandbox  # noqa: E402
 from app.trace import TraceStore  # noqa: E402
+
+
+class SlowModel:
+    def complete(self, messages, *, tools=None, model=None):
+        time.sleep(1.2)
+        return ModelResponse(content="late answer", finish_reason="stop")
 
 
 class BatchModel:
@@ -67,6 +74,24 @@ class AgentCancelBatchTest(unittest.TestCase):
         events = self.trace.read()
         self.assertTrue(any(e["event"] == "task.cancelled" for e in events))
         self.assertFalse(any(e["event"] == "task.completed" for e in events))
+
+    def test_deadline_wins_over_shared_cancel_event(self) -> None:
+        result = run_agent(
+            task="slow model",
+            model=SlowModel(),
+            policy=PolicyEngine.from_file(),
+            sandbox=FakeSandbox(),
+            trace=self.trace,
+            task_id="tk_deadline",
+            approver=lambda d, c: True,
+            task_timeout_s=1,
+            max_steps=2,
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error, "task_timeout")
+        events = self.trace.read()
+        self.assertTrue(any(e["event"] == "task.failed" for e in events))
+        self.assertFalse(any(e["event"] == "task.cancelled" for e in events))
 
 
 if __name__ == "__main__":

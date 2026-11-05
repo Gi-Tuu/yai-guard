@@ -169,6 +169,31 @@ class TaskServiceTest(unittest.TestCase):
         finally:
             service.close()
 
+    def test_finish_forces_terminal_after_three_conflicts(self) -> None:
+        service = TaskService.from_path(self.path)
+        try:
+            service.create(task_id="tk", trace_id="tr", owner="u", prompt="ls")
+            service.mark_running("tk")
+            original = service.store.finish
+            calls = {"n": 0}
+
+            def conflicting_finish(*args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] <= 3:
+                    return None
+                return original(*args, **kwargs)
+
+            with mock.patch.object(service.store, "finish",
+                                   side_effect=conflicting_finish):
+                record = service.finish("tk", TaskStatus.COMPLETED,
+                                        summary="done")
+            self.assertIsNotNone(record)
+            self.assertEqual(record.status, TaskStatus.COMPLETED)
+            self.assertEqual(service.store.get_task("tk").status,
+                             TaskStatus.COMPLETED)
+        finally:
+            service.close()
+
     def test_close_memory_is_safe(self) -> None:
         TaskService().close()
 

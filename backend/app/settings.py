@@ -12,7 +12,7 @@ from typing import Any
 from app.policy import PolicyEngine
 from app.tasks import TaskService
 
-APP_VERSION = "0.1.11"
+APP_VERSION = "0.1.12"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-05 — v0.1.12 terminal persistence and admin flags
+
+- `TaskService.finish` force-writes the terminal state after three CAS conflicts instead of returning a still-running record; `_finalize_run` treats a non-terminal result as persistence failure.
+- Admin reaper `dry_run`/`remove_unknown` now require strict JSON booleans; strings/numbers/null return 422.
+- Deadline is evaluated before the shared cancellation event, so an expired task is recorded as `task_timeout` rather than `cancel_requested`.
+- Added three-conflict finish, admin-flag, deadline-vs-cancel and unknown-container regressions.
+- Tests: 261 (7 skipped); coverage 73%.
+
 ## 2026-11-05 — v0.1.11 cancellation and terminal consistency
 
 - Cancellation and deadline are re-checked after model return, before every tool call, after approval, and before finish; remaining tools in a batch are not executed.

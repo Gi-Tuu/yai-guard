@@ -192,8 +192,14 @@ class TaskService:
             except Exception as exc:  # noqa: BLE001
                 self._mark_degraded(exc)
                 return None
+        # Last resort: the worker has already stopped. There is no useful
+        # concurrent transition left to protect; write the terminal state
+        # without a version guard rather than leaving a zombie running task.
         try:
-            return self.store.get_task(task_id)
+            return self.store.finish(
+                task_id, destination, summary=summary, error=error,
+                expected_version=None,
+            )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return None

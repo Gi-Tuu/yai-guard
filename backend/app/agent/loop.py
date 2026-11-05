@@ -186,11 +186,11 @@ def run_agent(
             # A model response can take a while; the user may cancel while the
             # request is in flight. Do not execute any tool from this batch after
             # that point.
-            if should_cancel is not None and should_cancel():
-                run_result = cancelled(step)
-                return run_result
             if time.monotonic() - started > timeout_s:
                 run_result = timed_out(step)
+                return run_result
+            if should_cancel is not None and should_cancel():
+                run_result = cancelled(step)
                 return run_result
 
             if not response.tool_calls:
@@ -232,11 +232,11 @@ def run_agent(
             })
 
             for call in response.tool_calls:
-                if should_cancel is not None and should_cancel():
-                    run_result = cancelled(step)
-                    return run_result
                 if time.monotonic() - started > timeout_s:
                     run_result = timed_out(step)
+                    return run_result
+                if should_cancel is not None and should_cancel():
+                    run_result = cancelled(step)
                     return run_result
                 record(actor="agent", event="tool.requested", payload={
                     "id": call.id, "name": call.name, "arguments": call.arguments,
@@ -271,11 +271,11 @@ def run_agent(
 
                 # Approval can block for a long time (or a human can cancel
                 # while deciding); re-check before the side effect starts.
-                if should_cancel is not None and should_cancel():
-                    run_result = cancelled(step)
-                    return run_result
                 if time.monotonic() - started > timeout_s:
                     run_result = timed_out(step)
+                    return run_result
+                if should_cancel is not None and should_cancel():
+                    run_result = cancelled(step)
                     return run_result
 
                 host_before = _host_snapshot(sandbox) if call.name == "run_command" else None
@@ -327,11 +327,11 @@ def run_agent(
                 elif call.name == "finish":
                     # Cancellation wins over a same-batch finish unless the
                     # finish already executed; re-check before publishing.
-                    if should_cancel is not None and should_cancel():
-                        run_result = cancelled(step)
-                        return run_result
                     if time.monotonic() - started > timeout_s:
                         run_result = timed_out(step)
+                        return run_result
+                    if should_cancel is not None and should_cancel():
+                        run_result = cancelled(step)
                         return run_result
                     claims, claim_error = _validate_claims(
                         call.arguments.get("claims"),

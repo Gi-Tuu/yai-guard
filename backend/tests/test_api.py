@@ -566,6 +566,26 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertIn("task store unavailable", res.json()["detail"])
         self.assertEqual(len(task_state.TASKS), before)
 
+    def test_maintenance_reap_rejects_non_boolean_flags(self) -> None:
+        with mock.patch.dict(os.environ, {"ADMIN_TOKEN": "audit-admin"}), \
+                mock.patch.object(maintenance, "_run_orphan_reaper",
+                                  return_value={"ok": True}):
+            for body in ({"dry_run": "false"},
+                         {"remove_unknown": "false"},
+                         {"remove_unknown": 1},
+                         {"dry_run": None}):
+                res = self.client.post(
+                    "/api/maintenance/reap", json=body,
+                    headers={"X-Demo-Token": "audit-admin"},
+                )
+                self.assertEqual(res.status_code, 422, body)
+            allowed = self.client.post(
+                "/api/maintenance/reap",
+                json={"dry_run": False, "remove_unknown": False},
+                headers={"X-Demo-Token": "audit-admin"},
+            )
+        self.assertEqual(allowed.status_code, 200)
+
     def test_maintenance_reap_requires_admin_token(self) -> None:
         old_admin = os.environ.pop("ADMIN_TOKEN", None)
         old_admins = os.environ.pop("ADMIN_TOKENS", None)

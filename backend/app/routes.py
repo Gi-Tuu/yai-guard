@@ -59,6 +59,12 @@ def maintenance_reap(body: dict[str, Any] | None = None,
                      admin: str = Depends(security._require_admin)) -> dict[str, Any]:
     """Admin-only SQLite-aware orphan reaper; dry_run defaults to false."""
     data = body or {}
+    for key in ("dry_run", "remove_unknown"):
+        if key in data and type(data[key]) is not bool:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{key} must be a JSON boolean",
+            )
     return maintenance._run_orphan_reaper(
         grace_s=float(data.get("grace_s", 60)),
         dry_run=bool(data.get("dry_run", False)),

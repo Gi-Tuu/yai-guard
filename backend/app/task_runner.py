@@ -329,9 +329,9 @@ def _finalize_run(ctx: RunContext) -> None:
         summary=ctx.final_summary, error=ctx.final_error,
     )
     if settings.TASK_SERVICE.enabled:
-        if persisted is None:
+        if persisted is None or not persisted.terminal:
             # Never publish a successful terminal state when the DB write did
-            # not happen; health/API must not claim completion.
+            # not happen; a later recovery can still repair the durable row.
             ctx.final_status = "failed"
             ctx.final_error = ctx.final_error or "terminal state was not persisted"
         elif persisted.status.value != ctx.final_status:
