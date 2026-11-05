@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-05 — v0.1.11 cancellation and terminal consistency
+
+- Cancellation and deadline are re-checked after model return, before every tool call, after approval, and before finish; remaining tools in a batch are not executed.
+- `TaskService.finish` retries CAS after a concurrent cancel/version bump; `_finalize_run` never publishes success when the durable terminal write failed.
+- Unknown containers are no longer removed by default; admin maintenance must pass `remove_unknown=true`.
+- Memory/single startup requeue is independent of remote mode and no longer full-reaps a shared controller.
+- Tests: 258 (7 skipped); coverage 73%.
+
 ## 2026-11-05 — v0.1.10 lease/requeue/controller stream fixes
 
 - `recover_expired` UPDATE re-checks the expired lease and version, so a heartbeat renewal between SELECT and UPDATE cannot be overwritten as interrupted.
