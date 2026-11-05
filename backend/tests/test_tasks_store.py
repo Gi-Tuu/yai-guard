@@ -206,6 +206,15 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(self.store.get_task("stale").status, TaskStatus.INTERRUPTED)
         self.assertEqual(self.store.get_task("active").status, TaskStatus.RUNNING)
 
+    def test_recover_expired_does_not_recover_a_renewed_lease(self) -> None:
+        self._create("renewed")
+        self.store.transition("renewed", TaskStatus.RUNNING, worker_id="w1",
+                              lease_until=1000)
+        self.assertTrue(self.store.heartbeat("renewed", worker_id="w1",
+                                             lease_seconds=1000, now=1500))
+        self.assertEqual(self.store.recover_expired(now=2000), [])
+        self.assertEqual(self.store.get_task("renewed").status, TaskStatus.RUNNING)
+
     def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
         version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(int(version), 5)

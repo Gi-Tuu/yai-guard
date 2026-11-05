@@ -313,7 +313,9 @@ def _requeue_queued_tasks() -> dict[str, Any]:
             owner=record.owner,
         )
         with task_state._LOCK:
-            task_state.TASKS.setdefault(record.id, state)
+            # The API may already own a state object (and its cancel_event).
+            # Reuse it; submitting a fresh object would make cancellation a no-op.
+            state = task_state.TASKS.setdefault(record.id, state)
         if not task_state._reserve_queue_slot():
             summary["skipped"].append({"task_id": record.id, "reason": "queue_full"})
             continue
@@ -406,19 +408,6 @@ def _start_single_runtime() -> None:
                          daemon=True).start()
 
 
-def _start_fake_runtime() -> None:
-    try:
-        from app.sandbox.remote_backend import RemoteSandbox
-
-        RemoteSandbox(
-            os.environ.get("SANDBOX_BASE_URL", "http://127.0.0.1:9000"),
-            os.environ.get("SANDBOX_TOKEN", ""),
-            timeout_s=5.0,
-        ).reap_orphans()
-    except Exception:  # noqa: BLE001 - startup cleanup is best-effort
-        pass
-
-
 def start_background_tasks() -> None:
     """Startup dispatcher; no route or app object is needed here."""
     if not settings._RUNTIME_LOCK_OK:
@@ -434,9 +423,9 @@ def start_background_tasks() -> None:
         # memory/DB requeue and retention loops; do not gate them on remote.
         _start_single_runtime()
         return
-    if os.environ.get("SANDBOX_DRIVER", "fake") == "remote":
-        _start_fake_runtime()
     # Memory mode has no DB queue, but a quiesce can still strand an in-memory
-    # task; always start the requeue loop for single-process mode.
+    # task; always start the requeue loop. Never full-reap a remote controller
+    # without authoritative task ownership: memory mode has no ownership DB.
     _start_requeue_loop()
+
 

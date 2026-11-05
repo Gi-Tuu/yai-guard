@@ -314,7 +314,7 @@ class TaskStore(QuotaMixin):
         current = time.time() if now is None else now
         with self._lock, self._conn:
             rows = self._conn.execute(
-                "SELECT id FROM tasks WHERE status IN (?, ?) "
+                "SELECT id, lease_until, version FROM tasks WHERE status IN (?, ?) "
                 "AND lease_until IS NOT NULL AND lease_until < ?",
                 (TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value, current),
             ).fetchall()
@@ -323,12 +323,14 @@ class TaskStore(QuotaMixin):
                 cursor = self._conn.execute(
                     "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
                     "lease_until = NULL, worker_id = NULL, updated_at = ?, "
-                    "version = version + 1 WHERE id = ? AND status IN (?, ?)",
+                    "version = version + 1 WHERE id = ? AND status IN (?, ?) "
+                    "AND lease_until IS NOT NULL AND lease_until < ? AND version = ?",
                     (
                         TaskStatus.INTERRUPTED.value,
                         data_protection.protect("lease_expired"), current,
                         current, row["id"],
                         TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
+                        current, row["version"],
                     ),
                 )
                 if cursor.rowcount == 1:

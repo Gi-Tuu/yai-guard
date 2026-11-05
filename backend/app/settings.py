@@ -12,7 +12,7 @@ from typing import Any
 from app.policy import PolicyEngine
 from app.tasks import TaskService
 
-APP_VERSION = "0.1.9"
+APP_VERSION = "0.1.10"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -111,6 +111,7 @@ TASK_HEARTBEAT_SECONDS = max(
 SSE_MAX_CONNECTIONS = int(os.environ.get("SSE_MAX_CONNECTIONS", "8"))
 RATE_WINDOW_S = 60.0
 _MISSING = object()
+
 
 
 

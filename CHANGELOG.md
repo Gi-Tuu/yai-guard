@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-05 — v0.1.10 lease/requeue/controller stream fixes
+
+- `recover_expired` UPDATE re-checks the expired lease and version, so a heartbeat renewal between SELECT and UPDATE cannot be overwritten as interrupted.
+- Requeue reuses the existing `TASKS` state object, preserving the API's `cancel_event` across SQLite/memory re-dispatch.
+- Memory mode no longer full-reaps a shared remote controller at startup without authoritative task ownership.
+- Controller upload reads `request.stream()` with an incremental size cap instead of buffering an unbounded body.
+- Tests: 254 (7 skipped); coverage 73%.
+
+## 2026-11-05 — v0.1.9 startup and deployment boundary fixes
+
+- Reaper aborts on DB read error; explicit SQLite failure fails closed.
+- Runtime lock is acquired only after creating the artifacts directory, and before task recovery.
+- Memory/fake/sqlite single modes now start the requeue loop; fixed `_REQUEUE_STARTED` scope error in memory+remote startup.
+- Remote HTTP deadlines follow command deadlines; queue count+insert is atomic.
+- Quiesce clears dispatch state and memory tasks are re-dispatched after the marker is removed.
+- Signing-key load failure rejects task creation and is exposed in health; UI shows verification level.
+- Claim payload now uses `claims_bound` plus `claim_semantics=binding-only`; old `claims_verified` traces remain readable by the verifier.
+- Deployment entrypoints pass `SANDBOX_REQUIRE_DIGEST`/`SANDBOX_REQUIRE_RUNSC`; Docker tests are opt-in and no longer probe Docker on import.
+- Tests: 252 (7 skipped); coverage 73%.
+
 ## 2026-11-05 — v0.1.8 safety remediation (previous)
 
 - Reaper now aborts the whole pass when a task record read fails; a DB error is no longer treated as an unknown task that can delete an active container.

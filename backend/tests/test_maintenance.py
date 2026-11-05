@@ -10,11 +10,57 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from app import maintenance, settings  # noqa: E402
+from app import maintenance, settings, task_state  # noqa: E402
 from app.trace import TraceStore  # noqa: E402
 
 
 class MaintenanceEvidenceTest(unittest.TestCase):
+    def test_requeue_reuses_existing_state_object(self) -> None:
+        existing = task_state.TaskState(
+            task_id="tk_requeue", trace_id="tr_requeue", task="x", owner="u",
+        )
+        existing.cancel_event.set()
+        record = SimpleNamespace(
+            id="tk_requeue", trace_id="tr_requeue", prompt="x", owner="u",
+            cancel_requested=False,
+        )
+
+        class Service:
+            enabled = True
+
+            def queued_tasks(self):
+                return [record]
+
+        class Executor:
+            def __init__(self):
+                self.submitted = []
+
+            def submit(self, fn, state):
+                self.submitted.append(state)
+
+        executor = Executor()
+        with task_state._LOCK:
+            task_state.TASKS.clear()
+            task_state.TASKS["tk_requeue"] = existing
+        with task_state._DISPATCH_LOCK:
+            task_state._DISPATCHED_QUEUED.clear()
+        try:
+            with mock.patch.object(settings, "TASK_SERVICE", Service()), \
+                    mock.patch.object(maintenance.quiesce, "is_quiesced",
+                                      return_value=False), \
+                    mock.patch.object(task_state, "_TASK_EXECUTOR", executor), \
+                    mock.patch.object(task_state, "_reserve_queue_slot",
+                                      return_value=True):
+                summary = maintenance._requeue_queued_tasks()
+            self.assertEqual(summary["requeued"], ["tk_requeue"])
+            self.assertIs(executor.submitted[0], existing)
+            self.assertTrue(executor.submitted[0].cancel_event.is_set())
+        finally:
+            with task_state._LOCK:
+                task_state.TASKS.clear()
+            with task_state._DISPATCH_LOCK:
+                task_state._DISPATCHED_QUEUED.clear()
+
     def test_cleanup_unverified_is_reconciled_as_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             traces = pathlib.Path(tmp)

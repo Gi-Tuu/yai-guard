@@ -81,10 +81,8 @@ print(settings._RUNTIME_LOCK_OK)
                 mock.patch.dict(os.environ, {"SANDBOX_DRIVER": "remote",
                                              "REQUEUE_ON_STARTUP": "1"}), \
                 mock.patch.object(maintenance, "_start_state_pruner"), \
-                mock.patch.object(maintenance, "_start_fake_runtime") as fake, \
                 mock.patch.object(maintenance, "_start_requeue_loop") as requeue:
             maintenance.start_background_tasks()
-        fake.assert_called_once()
         requeue.assert_called_once()
 
     def test_fresh_artifact_directory_is_created_before_lock(self) -> None:

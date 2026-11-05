@@ -240,7 +240,13 @@ async def put_file(task_id: str, path: str, request: Request,
                                     detail=f"file exceeds {_MAX_FILE_BYTES} bytes")
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid content-length")
-    data = await request.body()
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > _MAX_FILE_BYTES:
+            raise HTTPException(status_code=413,
+                                detail=f"file exceeds {_MAX_FILE_BYTES} bytes")
+        data.extend(chunk)
+    data = bytes(data)
     if len(data) > _MAX_FILE_BYTES:
         raise HTTPException(status_code=413,
                             detail=f"file exceeds {_MAX_FILE_BYTES} bytes")
