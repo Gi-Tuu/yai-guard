@@ -8,7 +8,9 @@ from typing import Any
 _BEARER = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._\-]{8,}")
 _SK = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 _ASSIGN = re.compile(
-    r"(?i)\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[=:]\s*[\"']?([^\s\"',;]{4,})[\"']?"
+    r"(?i)\b((?:[A-Z][A-Z0-9_]*)?"
+    r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)[A-Z0-9_]*)"
+    r"\s*[=:]\s*(\"[^\"]*\"|'[^']*'|[^\s\"',;]{4,})"
 )
 
 

@@ -1,6 +1,15 @@
 # Changelog
 
-## 2026-11-05 — v0.1.2 audit remediation
+## 2026-11-05 — v0.1.3 second-pass audit remediation
+
+- Recovery now reconciles a `task.completed + sandbox.destroy.unverified` trace as failed, not completed.
+- Controller `/healthz` has a short readiness cache to avoid public-probe Docker amplification; controller create is serialized per task_id.
+- Task prompt/summary/error can be encrypted at rest with `TASK_DATA_KEY`; legacy plaintext remains readable.
+- `TaskService` degraded recovery probes a write transaction, not only a read.
+- `reconcile_terminal` uses CAS; state pruner runs in the background; schema v5 adds rate/SSE lease indexes.
+- SSE and backup consistency fixes retained; redaction handles exact `PASSWORD`/`PASSWD`/`PWD`/`CREDENTIAL` forms and quoted values.
+- Tests: 235 (1 skipped). Docker 6/6; controller 5/5.
+## 2026-11-05 — v0.1.2 audit remediation (previous)
 
 - Task creation now fails with HTTP 503 instead of returning a fake `queued`
   task when the durable store rejects the write.
@@ -88,4 +97,5 @@
 ### Release
 
 - Version: `0.1.1` (API `/healthz` reports `0.1.1`).
+
 

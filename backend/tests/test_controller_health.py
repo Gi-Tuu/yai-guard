@@ -21,6 +21,10 @@ except ImportError:  # pragma: no cover - dependency gate is tested elsewhere
 
 
 class ControllerHealthTest(unittest.TestCase):
+    def setUp(self) -> None:
+        with controller._HEALTH_LOCK:
+            controller._HEALTH_CACHE = None
+
     def test_health_rechecks_readiness(self) -> None:
         ready = {"daemon": {"ok": True}, "runtime": "runsc", "image": {"ok": True}}
         with mock.patch.object(controller._backend, "ensure_ready",
@@ -39,6 +43,14 @@ class ControllerHealthTest(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertFalse(payload["ok"])
         self.assertIn("docker is down", payload["error"])
+
+    def test_health_is_short_cached(self) -> None:
+        ready = {"daemon": {"ok": True}, "runtime": "runsc", "image": {"ok": True}}
+        with mock.patch.object(controller._backend, "ensure_ready",
+                               return_value=ready) as ensure:
+            controller.healthz()
+            controller.healthz()
+        self.assertEqual(ensure.call_count, 1)
 
     def test_put_file_rejects_oversized_body(self) -> None:
         if Request is None:

@@ -15,6 +15,41 @@ from app.trace import TraceStore  # noqa: E402
 
 
 class MaintenanceEvidenceTest(unittest.TestCase):
+    def test_cleanup_unverified_is_reconciled_as_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            traces = pathlib.Path(tmp)
+            trace_id = "tr_cleanup"
+            trace = TraceStore(traces / f"{trace_id}.jsonl", trace_id)
+            trace.append(task_id="tk", actor="system", event="task.created", payload={})
+            trace.append(task_id="tk", actor="agent", event="task.completed",
+                         payload={"summary": "done"})
+            trace.append(task_id="tk", actor="system",
+                         event="sandbox.destroy.unverified",
+                         payload={"cleanup": {"verified": False}})
+            record = SimpleNamespace(
+                id="tk", trace_id=trace_id, error="lease_expired",
+            )
+            calls: list[tuple] = []
+
+            class Service:
+                enabled = True
+
+                def interrupted_tasks(self):
+                    return [record]
+
+                def reconcile_terminal(self, task_id, status, **kwargs):
+                    calls.append((task_id, status, kwargs))
+                    return None
+
+            with mock.patch.object(settings, "TRACES", traces), \
+                    mock.patch.object(settings, "TASK_SERVICE", Service()):
+                recorded = maintenance._record_interrupted_events()
+
+            self.assertEqual(recorded, ["tk"])
+            self.assertEqual(calls[0][0], "tk")
+            self.assertEqual(calls[0][1].value, "failed")
+            self.assertEqual(calls[0][2]["error"], "cleanup_unverified")
+
     def test_interrupted_event_uses_record_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             traces = pathlib.Path(tmp)

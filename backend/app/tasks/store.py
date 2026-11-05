@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app import data_protection
 from .models import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
@@ -23,7 +24,7 @@ from .models import (
     can_transition,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _TASKS = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -118,10 +119,18 @@ def _migration_v4(conn: sqlite3.Connection) -> None:
     conn.executescript(_LIMITS)
 
 
+def _migration_v5(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_hits_ts ON rate_hits(ts)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sse_leases_created "
+        "ON sse_leases(created_at)"
+    )
+
+
 # Ordered migration steps. Add a new function and bump SCHEMA_VERSION for any
 # future schema change; never edit an already-released step.
 _MIGRATIONS = {1: _migration_v1, 2: _migration_v2, 3: _migration_v3,
-               4: _migration_v4}
+               4: _migration_v4, 5: _migration_v5}
 
 
 class TaskAlreadyExists(RuntimeError):
@@ -191,6 +200,16 @@ class TaskStore:
         with self._lock:
             self._conn.close()
 
+    def probe(self) -> None:
+        """Verify the store can acquire a write transaction, then roll it back."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.rollback()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     # ---------------------------------------------------------------- helpers
     @staticmethod
     def _record(row: sqlite3.Row) -> TaskRecord:
@@ -198,10 +217,10 @@ class TaskStore:
             id=row["id"],
             trace_id=row["trace_id"],
             owner=row["owner"],
-            prompt=row["prompt"],
+            prompt=data_protection.unprotect(row["prompt"]),
             status=TaskStatus(row["status"]),
-            summary=row["summary"],
-            error=row["error"],
+            summary=data_protection.unprotect(row["summary"]),
+            error=data_protection.unprotect(row["error"]),
             cancel_requested=bool(row["cancel_requested"]),
             created_at=row["created_at"],
             started_at=row["started_at"],
@@ -235,7 +254,8 @@ class TaskStore:
                 self._conn.execute(
                     "INSERT INTO tasks (id, trace_id, owner, prompt, status, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (task_id, trace_id, owner, prompt, TaskStatus.QUEUED.value,
+                    (task_id, trace_id, owner,
+                     data_protection.protect(prompt), TaskStatus.QUEUED.value,
                      created, created),
                 )
             except sqlite3.IntegrityError as exc:
@@ -315,6 +335,8 @@ class TaskStore:
                 ("worker_id", worker_id),
             ):
                 if value is not None:
+                    if column in ("summary", "error"):
+                        value = data_protection.protect(value)
                     assignments.append(f"{column} = ?")
                     values.append(value)
             if cancel_requested is not None:
@@ -396,7 +418,8 @@ class TaskStore:
                     "lease_until = NULL, worker_id = NULL, updated_at = ?, "
                     "version = version + 1 WHERE id = ? AND status IN (?, ?)",
                     (
-                        TaskStatus.INTERRUPTED.value, "lease_expired", current,
+                        TaskStatus.INTERRUPTED.value,
+                        data_protection.protect("lease_expired"), current,
                         current, row["id"],
                         TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
                     ),
@@ -481,10 +504,12 @@ class TaskStore:
             self._conn.execute(
                 "UPDATE tasks SET status = ?, summary = ?, error = ?, "
                 "finished_at = ?, lease_until = NULL, worker_id = NULL, "
-                "updated_at = ?, version = version + 1 WHERE id = ? AND status = ?",
+                "updated_at = ?, version = version + 1 "
+                "WHERE id = ? AND status = ? AND version = ?",
                 (
-                    destination.value, summary, error, finished, finished, task_id,
-                    TaskStatus.INTERRUPTED.value,
+                    destination.value, data_protection.protect(summary),
+                    data_protection.protect(error), finished, finished, task_id,
+                    TaskStatus.INTERRUPTED.value, current.version,
                 ),
             )
             return self._get_locked(task_id)
@@ -538,7 +563,8 @@ class TaskStore:
                     "version = version + 1 "
                     "WHERE id = ? AND status IN (?, ?)",
                     (
-                        TaskStatus.INTERRUPTED.value, reason, finished, finished, row["id"],
+                        TaskStatus.INTERRUPTED.value,
+                        data_protection.protect(reason), finished, finished, row["id"],
                         TaskStatus.RUNNING.value, TaskStatus.WAITING_APPROVAL.value,
                     ),
                 )
@@ -746,3 +772,4 @@ __all__ = [
     "TaskStore",
     "ApprovalStatus",
 ]
+

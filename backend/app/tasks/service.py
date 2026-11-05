@@ -60,7 +60,7 @@ class TaskService:
         if self.store is None:
             return False
         try:
-            self.store.count_by_status()
+            self.store.probe()
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             return False

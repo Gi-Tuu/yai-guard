@@ -1,6 +1,7 @@
 """Background maintenance: reaper, retention, requeue, multi-worker recovery."""
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -13,11 +14,32 @@ from app import settings
 from app import task_state
 from app.task_runner import _build_sandbox, run_task
 
+_log = logging.getLogger(__name__)
+
 _REAPER_STARTED = False
 _REQUEUE_STARTED = False
 _RETENTION_STARTED = False
 _MULTI_WORKERS_STARTED = False
+_STATE_PRUNER_STARTED = False
 _MAINTENANCE_LOCK_HANDLE = None
+
+
+def _state_prune_loop() -> None:
+    while True:
+        time.sleep(60)
+        try:
+            task_state._prune_tasks()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _start_state_pruner() -> None:
+    global _STATE_PRUNER_STARTED
+    if _STATE_PRUNER_STARTED:
+        return
+    _STATE_PRUNER_STARTED = True
+    threading.Thread(target=_state_prune_loop, name="task-state-pruner",
+                     daemon=True).start()
 
 
 def _run_orphan_reaper(*, grace_s: float = 60.0,
@@ -63,7 +85,7 @@ def _retention_loop() -> None:
         try:
             _prune_old_state()
         except Exception:  # noqa: BLE001 - retention must not crash the app
-            pass
+            _log.warning("retention failed", exc_info=True)
 
 
 def _multi_worker_loop(worker_id: str) -> None:
@@ -144,7 +166,7 @@ def _reaper_loop() -> None:
         try:
             _run_orphan_reaper()
         except Exception:  # noqa: BLE001 - background reaper must not crash the app
-            pass
+            _log.warning("orphan reaper failed", exc_info=True)
 
 
 def _record_interrupted_events() -> list[str]:
@@ -174,10 +196,16 @@ def _record_interrupted_events() -> list[str]:
                         "task.failed": TaskStatus.FAILED,
                         "task.cancelled": TaskStatus.CANCELLED,
                     }[event["event"]]
+                    reconcile_error = payload.get("error") or payload.get("reason")
+                    if (event["event"] == "task.completed"
+                            and any(e.get("event") == "sandbox.destroy.unverified"
+                                    for e in events)):
+                        target = TaskStatus.FAILED
+                        reconcile_error = "cleanup_unverified"
                     settings.TASK_SERVICE.reconcile_terminal(
                         record.id, target,
                         summary=str(payload.get("summary", "")),
-                        error=payload.get("error") or payload.get("reason"),
+                        error=reconcile_error,
                     )
                     recorded.append(record.id)
                 continue
@@ -257,7 +285,7 @@ def _requeue_loop() -> None:
         try:
             _requeue_queued_tasks()
         except Exception:  # noqa: BLE001 - background retry must not crash
-            pass
+            _log.warning("queued requeue failed", exc_info=True)
 
 
 def _start_multi_runtime() -> None:
@@ -330,6 +358,7 @@ def start_background_tasks() -> None:
     """Startup dispatcher; no route or app object is needed here."""
     if not settings._RUNTIME_LOCK_OK:
         return
+    _start_state_pruner()
     if settings.TASK_SERVICE.enabled and settings.TASK_RUNTIME_MODE == "multi":
         _start_multi_runtime()
         return
@@ -339,3 +368,4 @@ def start_background_tasks() -> None:
         _start_single_runtime()
         return
     _start_fake_runtime()
+

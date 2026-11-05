@@ -201,12 +201,12 @@ class TaskStoreTest(unittest.TestCase):
 
     def test_schema_version_is_recorded_and_reopen_is_noop(self) -> None:
         version = self.store._conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(int(version), 4)
+        self.assertEqual(int(version), 5)
         self.store.close()
         reopened = TaskStore(self.path)
         try:
             self.assertEqual(
-                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 4,
+                int(reopened._conn.execute("PRAGMA user_version").fetchone()[0]), 5,
             )
         finally:
             reopened.close()
@@ -224,7 +224,7 @@ class TaskStoreTest(unittest.TestCase):
         migrated = TaskStore(v1_path)
         try:
             self.assertEqual(
-                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 4,
+                int(migrated._conn.execute("PRAGMA user_version").fetchone()[0]), 5,
             )
             columns = {row[1] for row in migrated._conn.execute("PRAGMA table_info(tasks)")}
             self.assertIn("updated_at", columns)
@@ -266,3 +266,4 @@ class TaskStoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

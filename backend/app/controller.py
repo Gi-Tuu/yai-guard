@@ -7,9 +7,11 @@
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 import threading
+import time
 from typing import Any
 
 try:
@@ -30,6 +32,32 @@ _MAX_FILE_BYTES = int(os.environ.get("SANDBOX_MAX_FILE_BYTES", "2097152"))
 _backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
 _BACKEND_LOCK = threading.Lock()
 _BACKENDS: dict[str, DockerSandbox] = {}
+_CREATE_LOCKS_GUARD = threading.Lock()
+_CREATE_LOCKS: dict[str, dict[str, Any]] = {}
+_HEALTH_LOCK = threading.Lock()
+_HEALTH_CACHE: tuple[float, int, dict[str, Any]] | None = None
+_HEALTH_CACHE_SECONDS = max(0.0, float(
+    os.environ.get("CONTROLLER_HEALTH_CACHE_SECONDS", "1.0")
+))
+
+
+@contextlib.contextmanager
+def _task_creation_lock(task_id: str):
+    """Serialise create for one task_id without serialising unrelated tasks."""
+    with _CREATE_LOCKS_GUARD:
+        entry = _CREATE_LOCKS.setdefault(
+            task_id, {"lock": threading.Lock(), "users": 0},
+        )
+        entry["users"] += 1
+    entry["lock"].acquire()
+    try:
+        yield
+    finally:
+        entry["lock"].release()
+        with _CREATE_LOCKS_GUARD:
+            entry["users"] -= 1
+            if entry["users"] <= 0 and _CREATE_LOCKS.get(task_id) is entry:
+                _CREATE_LOCKS.pop(task_id, None)
 
 # 启动即检查 daemon / runtime / 镜像；失败时 /healthz 返回 503，且 create 会显式报错。
 # 绝不静默把 runsc 降级成 runc（P1-6）。
@@ -49,10 +77,17 @@ def _auth(token: str | None) -> None:
 
 @app.get("/healthz")
 def healthz() -> JSONResponse:
-    # Re-check on every probe: controller startup is long-lived and Docker can
-    # disappear after boot. A static startup snapshot would keep reporting green.
+    # Re-check Docker state, but cache briefly: /healthz is public and must not
+    # turn every probe into two Docker subprocesses.
+    global _HEALTH_CACHE
+    now = time.monotonic()
+    with _HEALTH_LOCK:
+        cached = _HEALTH_CACHE
+    if cached is not None and now < cached[0]:
+        return JSONResponse(cached[2], status_code=cached[1])
     try:
         ready = _backend.ensure_ready()
+        status = 200
         payload: dict[str, Any] = {
             "ok": True,
             "runtime": ready.get("runtime"),
@@ -61,8 +96,8 @@ def healthz() -> JSONResponse:
             "image_status": ready.get("image"),
             "error": None,
         }
-        return JSONResponse(payload, status_code=200)
     except Exception as exc:  # noqa: BLE001 - health must report the failure
+        status = 503
         payload = {
             "ok": False,
             "runtime": _RUNTIME,
@@ -71,7 +106,9 @@ def healthz() -> JSONResponse:
             "image_status": _STARTUP.get("image"),
             "error": f"{type(exc).__name__}: {exc}",
         }
-        return JSONResponse(payload, status_code=503)
+    with _HEALTH_LOCK:
+        _HEALTH_CACHE = (time.monotonic() + _HEALTH_CACHE_SECONDS, status, payload)
+    return JSONResponse(payload, status_code=status)
 
 
 @app.get("/v1/host/snapshot")
@@ -129,17 +166,15 @@ def create(task_id: str, limits: dict[str, Any] | None = None,
         max_output_bytes=int(data.get("max_output_bytes", 8192)),
         max_total_output_bytes=int(data.get("max_total_output_bytes", 1_048_576)),
     )
-    with _BACKEND_LOCK:
-        if task_id in _BACKENDS:
-            raise HTTPException(status_code=409, detail="task_id already exists")
-    backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
-    backend.create(task_id, parsed)
-    with _BACKEND_LOCK:
-        if task_id in _BACKENDS:
-            backend.destroy(task_id)
-            raise HTTPException(status_code=409, detail="task_id already exists")
-        _BACKENDS[task_id] = backend
-        info = backend.sandbox_info()
+    with _task_creation_lock(task_id):
+        with _BACKEND_LOCK:
+            if task_id in _BACKENDS:
+                raise HTTPException(status_code=409, detail="task_id already exists")
+        backend = DockerSandbox(image=_IMAGE, runtime=_RUNTIME)
+        backend.create(task_id, parsed)
+        with _BACKEND_LOCK:
+            _BACKENDS[task_id] = backend
+            info = backend.sandbox_info()
     return {
         "ok": True, "task_id": task_id, "limits": parsed.to_dict(),
         "container_id": info.get("container_id"),

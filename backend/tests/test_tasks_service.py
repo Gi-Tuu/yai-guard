@@ -115,7 +115,7 @@ class TaskServiceTest(unittest.TestCase):
         service = TaskService.from_path(self.path)
         try:
             service._mark_degraded(RuntimeError("transient"))
-            with mock.patch.object(service.store, "count_by_status",
+            with mock.patch.object(service.store, "probe",
                                    side_effect=RuntimeError("still down")):
                 self.assertFalse(service.health()["ok"])
             recovered = service.health()
