@@ -117,7 +117,7 @@ class TraceIntegrityTest(unittest.TestCase):
         store.append(task_id="tk", actor="system", event="task.created", payload={})
         if completed:
             store.append(task_id="tk", actor="agent", event="task.completed", payload={})
-        store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed", payload={})
+        store.append(task_id="tk", actor="system", event="sandbox.destroy.confirmed", payload={"cleanup": {"verified": True}})
         if anchor:
             store.seal(self.anchor, hmac_key=hmac_key)
         return store

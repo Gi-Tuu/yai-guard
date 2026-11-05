@@ -129,29 +129,30 @@ def _verify_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
             "final_hash": prev if chain_ok else None}
 
 
-def _cleanup_state(kinds: list[str | None], last: str | None) -> bool | None:
+def _cleanup_state(events: list[dict[str, Any]], last: str | None) -> bool | None:
     if last == "sandbox.destroy.unverified":
         return False
     if last == "sandbox.destroy.confirmed":
-        return True
+        payload = events[-1].get("payload") or {}
+        cleanup = payload.get("cleanup") or {}
+        # Event name alone is not proof; the payload must say JSON true.
+        return cleanup.get("verified") is True
     # Legacy event only proves that a destroy was attempted. Strict
     # verification must not turn it into a confirmed cleanup.
     return None
 
 
 def _completeness_state(task_status: str | None, kinds: list[str | None],
-                        last: str | None) -> bool | None:
+                        last: str | None, cleanup_ok: bool | None) -> bool | None:
     if task_status == "completed":
-        return bool("task.completed" in kinds
-                    and last in ("sandbox.destroy.confirmed", "sandbox.destroyed"))
+        return bool("task.completed" in kinds and cleanup_ok is True)
     if task_status == "failed":
         return bool("task.failed" in kinds
                     or ("task.completed" in kinds
                         and last == "sandbox.destroy.unverified"))
     if task_status == "cancelled":
         return bool("task.cancelled" in kinds
-                    and ("sandbox.created" not in kinds
-                         or last == "sandbox.destroy.confirmed"))
+                    and ("sandbox.created" not in kinds or cleanup_ok is True))
     if task_status == "interrupted":
         # Recovery proves the interruption; a confirmed cleanup is nice but not
         # required because the crashed process never got to write it.
@@ -275,8 +276,9 @@ def verify_trace_file(
 
     kinds = [ev.get("event") for ev in events]
     last = kinds[-1] if kinds else None
-    result["cleanup_ok"] = _cleanup_state(kinds, last)
-    result["completeness_ok"] = _completeness_state(task_status, kinds, last)
+    result["cleanup_ok"] = _cleanup_state(events, last)
+    result["completeness_ok"] = _completeness_state(
+        task_status, kinds, last, result["cleanup_ok"])
 
     result.update(_anchor_state(anchor_path, len(events), result["final_hash"],
                                 hmac_key, public_key))

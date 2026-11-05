@@ -393,7 +393,9 @@ def _verify_sandbox_and_cleanup(bundle: dict[str, Any],
             return _fail(result, "INCOMPLETE", "missing_bundle_cleanup")
         if bundle_cleanup != raw_cleanup:
             return _fail(result, "FAILED", "cleanup_metadata_mismatch")
-        expected_confirmed = bool((raw_cleanup.get("cleanup") or {}).get("verified"))
+        expected_confirmed = (
+            (raw_cleanup.get("cleanup") or {}).get("verified") is True
+        )
         if lifecycle.get("confirmed") is not expected_confirmed:
             return _fail(result, "FAILED", "cleanup_confirmation_mismatch")
         if not expected_confirmed:

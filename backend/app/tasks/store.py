@@ -188,6 +188,9 @@ class TaskStore(QuotaMixin):
         owner: str | None = None,
         status: TaskStatus | str | None = None,
         limit: int = 50,
+        offset: int = 0,
+        after_created: float | None = None,
+        after_id: str | None = None,
     ) -> list[TaskRecord]:
         clauses: list[str] = []
         values: list[Any] = []
@@ -197,12 +200,17 @@ class TaskStore(QuotaMixin):
         if status is not None:
             clauses.append("status = ?")
             values.append(TaskStatus(status).value)
+        if after_created is not None and after_id is not None:
+            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            values.extend([after_created, after_created, after_id])
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT * FROM tasks{where} ORDER BY created_at DESC LIMIT ?",
-                (*values, limit),
+                f"SELECT * FROM tasks{where} ORDER BY created_at DESC, id DESC "
+                "LIMIT ? OFFSET ?",
+                (*values, limit, offset),
             ).fetchall()
         return [self._record(row) for row in rows]
 
@@ -220,6 +228,7 @@ class TaskStore(QuotaMixin):
         worker_id: str | None = None,
         cancel_requested: bool | None = None,
         expected_version: int | None = None,
+        expected_worker_id: str | None = None,
     ) -> TaskRecord | None:
         """CAS transition. Returns None when the state no longer allows it."""
         destination = TaskStatus(target)
@@ -230,6 +239,9 @@ class TaskStore(QuotaMixin):
             if not can_transition(current.status, destination):
                 return None
             if expected_version is not None and current.version != expected_version:
+                return None
+            if (expected_worker_id is not None
+                    and current.worker_id != expected_worker_id):
                 return None
             assignments = ["status = ?", "version = version + 1", "updated_at = ?"]
             values: list[Any] = [destination.value, time.time()]
@@ -253,9 +265,12 @@ class TaskStore(QuotaMixin):
                 assignments.append("finished_at = ?")
                 values.append(time.time())
             values.extend([task_id, current.status.value, current.version])
+            where = "id = ? AND status = ? AND version = ?"
+            if expected_worker_id is not None:
+                where += " AND worker_id = ?"
+                values.append(expected_worker_id)
             cursor = self._conn.execute(
-                f"UPDATE tasks SET {', '.join(assignments)} "
-                "WHERE id = ? AND status = ? AND version = ?",
+                f"UPDATE tasks SET {', '.join(assignments)} WHERE {where}",
                 tuple(values),
             )
             if cursor.rowcount != 1:
@@ -381,6 +396,7 @@ class TaskStore(QuotaMixin):
         summary: str = "",
         error: str | None = None,
         expected_version: int | None = None,
+        expected_worker_id: str | None = None,
     ) -> TaskRecord | None:
         destination = TaskStatus(status)
         if destination not in TERMINAL_STATUSES:
@@ -391,6 +407,7 @@ class TaskStore(QuotaMixin):
             summary=summary,
             error=error,
             expected_version=expected_version,
+            expected_worker_id=expected_worker_id,
         )
 
     def reconcile_terminal(

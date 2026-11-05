@@ -11,7 +11,7 @@ from typing import Any
 
 from app.tasks import TaskStatus
 from app.tasks.reaper import reap_orphans as reap_task_orphans
-from app.trace import TraceStore
+from app.trace import TraceStore, verify_trace_file
 from app import settings
 from app import task_state
 from app import quiesce
@@ -211,26 +211,116 @@ def _reconcile_terminal_from_events(record: Any, events: list[dict[str, Any]],
     anchor_path = trace_path.with_name(trace_path.name.replace(
         ".jsonl", ".anchor.json"))
     if not anchor_path.exists():
+        _log.warning("terminal reconciliation rejected %s: anchor missing",
+                     record.id)
         return False
-    # A completed recovery must also have a confirmed cleanup and an anchor
-    # that matches this exact trace; otherwise it is only an interrupted
-    # execution whose cleanup is unknown.
+    try:
+        anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _log.warning("terminal reconciliation rejected %s: anchor %s",
+                     record.id, type(exc).__name__)
+        return False
+    if (anchor.get("trace_id") != record.trace_id
+            or anchor.get("events") != len(events)
+            or anchor.get("final_hash") != events[-1].get("hash")):
+        _log.warning("terminal reconciliation rejected %s: anchor mismatch",
+                     record.id)
+        return False
+    if any(e.get("trace_id") != record.trace_id
+           or e.get("task_id") != record.id for e in events):
+        _log.warning("terminal reconciliation rejected %s: event identity",
+                     record.id)
+        return False
+
+    verification = verify_trace_file(
+        trace_path,
+        task_status=target.value,
+        anchor_path=anchor_path,
+        hmac_key=os.environ.get("TRACE_HMAC_KEY") or None,
+        public_key=settings.TRACE_ED25519_PUBLIC,
+        strict=target is TaskStatus.COMPLETED,
+    )
     if target is TaskStatus.COMPLETED:
-        if not events or events[-1].get("event") != "sandbox.destroy.confirmed":
+        if not verification["ok"] or verification.get("cleanup_ok") is not True:
+            _log.warning(
+                "terminal reconciliation rejected %s: trace status=%s reason=%s",
+                record.id, verification.get("status"), verification.get("reason"),
+            )
             return False
-        try:
-            anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    else:
+        if (not verification.get("chain_ok")
+                or not verification.get("sequence_ok")
+                or verification.get("anchor_ok") is not True):
+            _log.warning("terminal reconciliation rejected %s: evidence chain",
+                         record.id)
             return False
-        if (anchor.get("events") != len(events)
-                or anchor.get("final_hash") != events[-1].get("hash")):
+        if (os.environ.get("TRACE_HMAC_KEY")
+                and verification.get("authentic") is not True):
+            _log.warning("terminal reconciliation rejected %s: HMAC", record.id)
             return False
+        if (settings.TRACE_ED25519_PUBLIC is not None
+                and verification.get("ed25519_ok") is not True):
+            _log.warning("terminal reconciliation rejected %s: signature",
+                         record.id)
+            return False
+
     result = settings.TASK_SERVICE.reconcile_terminal(
         record.id, target,
         summary=str(payload.get("summary", "")),
         error=reconcile_error,
     )
-    return result is not None and result.status is target
+    if result is None or result.status is not target:
+        _log.warning("terminal reconciliation CAS failed for %s", record.id)
+        return False
+    return True
+
+
+_PAGE_CURSORS: dict[str, tuple[float, str]] = {}
+
+
+def _iter_task_pages(status: TaskStatus, *, page_size: int = 500,
+                     max_pages: int = 40):
+    """Bounded keyset pagination that resumes on the next maintenance pass.
+
+    Stable (created_at, id) ordering avoids offset shifts when records change
+    state during a scan; a pass that exhausts max_pages leaves a cursor for the
+    next pass instead of starting from offset 0 forever.
+    """
+    key = status.value
+    cursor = _PAGE_CURSORS.get(key)
+    for _ in range(max_pages):
+        after_created = cursor[0] if cursor else None
+        after_id = cursor[1] if cursor else None
+        try:
+            records = settings.TASK_SERVICE.list_tasks(
+                status=status, limit=page_size,
+                after_created=after_created, after_id=after_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("task page read failed for %s after %s: %s",
+                         status.value, cursor, exc)
+            return
+        if not records:
+            _PAGE_CURSORS.pop(key, None)
+            return
+        yield from records
+        last = records[-1]
+        cursor = (getattr(last, "created_at", 0.0), last.id)
+        _PAGE_CURSORS[key] = cursor
+        if len(records) < page_size:
+            _PAGE_CURSORS.pop(key, None)
+            return
+
+
+def _sync_cached_record(record_id: str) -> None:
+    if settings.TASK_RUNTIME_MODE != "single":
+        return
+    try:
+        record = settings.TASK_SERVICE.get_record(record_id)
+        if record is not None:
+            task_state.sync_record(record)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("cache sync failed for %s: %s", record_id, exc)
 
 
 def _record_interrupted_events() -> list[str]:
@@ -238,7 +328,7 @@ def _record_interrupted_events() -> list[str]:
     recorded: list[str] = []
     if not settings.TASK_SERVICE.enabled:
         return recorded
-    for record in settings.TASK_SERVICE.interrupted_tasks():
+    for record in _iter_task_pages(TaskStatus.INTERRUPTED):
         path = settings.TRACES / f"{record.trace_id}.jsonl"
         if not path.exists():
             continue
@@ -248,6 +338,7 @@ def _record_interrupted_events() -> list[str]:
             if not events:
                 continue
             if _reconcile_terminal_from_events(record, events, trace_path=path):
+                _sync_cached_record(record.id)
                 recorded.append(record.id)
                 continue
             if any(e.get("event") in ("task.completed", "task.failed",
@@ -269,17 +360,15 @@ def _record_interrupted_events() -> list[str]:
             )
             recorded.append(record.id)
         except Exception:  # noqa: BLE001 - one bad trace must not break startup
+            _log.warning("interrupted evidence failed for %s", record.id,
+                         exc_info=True)
             continue
 
     # DB write failure can leave a task running after its trace already reached
     # a terminal state. Reconcile only when the trace has exactly one terminal
     # event; the DB update itself is version-CAS protected.
     for status in (TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL):
-        try:
-            records = settings.TASK_SERVICE.list_tasks(status=status, limit=500)
-        except Exception:  # noqa: BLE001
-            continue
-        for record in records:
+        for record in _iter_task_pages(status):
             path = settings.TRACES / f"{record.trace_id}.jsonl"
             anchor = settings.TRACES / f"{record.trace_id}.anchor.json"
             if not path.exists() or not anchor.exists():
@@ -290,6 +379,7 @@ def _record_interrupted_events() -> list[str]:
                 events = TraceStore(path, record.trace_id).read()
                 if events and _reconcile_terminal_from_events(
                         record, events, trace_path=path):
+                    _sync_cached_record(record.id)
                     recorded.append(record.id)
             except Exception as exc:  # noqa: BLE001
                 _log.warning("terminal reconciliation failed for %s: %s",
@@ -399,13 +489,13 @@ def _requeue_loop() -> None:
     interval = max(10, int(os.environ.get("REQUEUE_INTERVAL_S", "30")))
     while True:
         time.sleep(interval)
+        if os.environ.get("REQUEUE_ON_STARTUP", "1") != "0":
+            try:
+                _requeue_queued_tasks()
+            except Exception:  # noqa: BLE001 - background retry must not crash
+                _log.warning("queued requeue failed", exc_info=True)
         try:
-            _requeue_queued_tasks()
-        except Exception:  # noqa: BLE001 - background retry must not crash
-            _log.warning("queued requeue failed", exc_info=True)
-        try:
-            # Single-process lifetime reconciliation: a transient DB finish
-            # failure must repair before the next restart, not only at boot.
+            # Requeue and terminal reconciliation have independent switches.
             _record_interrupted_events()
         except Exception:  # noqa: BLE001
             _log.warning("periodic terminal reconciliation failed", exc_info=True)
@@ -434,8 +524,6 @@ def _start_multi_runtime() -> None:
 
 def _start_requeue_loop() -> None:
     global _REQUEUE_STARTED
-    if os.environ.get("REQUEUE_ON_STARTUP", "1") == "0":
-        return
     if _REQUEUE_STARTED:
         return
     _REQUEUE_STARTED = True

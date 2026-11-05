@@ -166,7 +166,8 @@ class TaskService:
             return None
 
     def finish(self, task_id: str, status: TaskStatus | str, *,
-               summary: str = "", error: str | None = None) -> TaskRecord | None:
+               summary: str = "", error: str | None = None,
+               worker_id: str | None = None) -> TaskRecord | None:
         if self.store is None:
             return None
         destination = TaskStatus(status)
@@ -183,6 +184,7 @@ class TaskService:
                 persisted = self.store.finish(
                     task_id, destination, summary=summary, error=error,
                     expected_version=record.version,
+                    expected_worker_id=worker_id,
                 )
                 if persisted is not None:
                     return persisted
@@ -199,6 +201,7 @@ class TaskService:
             return self.store.finish(
                 task_id, destination, summary=summary, error=error,
                 expected_version=None,
+                expected_worker_id=worker_id,
             )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
@@ -403,12 +406,17 @@ class TaskService:
 
     def list_tasks(self, *, owner: str | None = None,
                    status: TaskStatus | str | None = None,
-                   limit: int = 50) -> list[TaskRecord]:
+                   limit: int = 50, offset: int = 0,
+                   after_created: float | None = None,
+                   after_id: str | None = None) -> list[TaskRecord]:
         """Strict task listing for maintenance/reconciliation callers."""
         if self.store is None:
             raise RuntimeError("task store is disabled")
         try:
-            return self.store.list_tasks(owner=owner, status=status, limit=limit)
+            return self.store.list_tasks(
+                owner=owner, status=status, limit=limit, offset=offset,
+                after_created=after_created, after_id=after_id,
+            )
         except Exception as exc:  # noqa: BLE001
             self._mark_degraded(exc)
             raise

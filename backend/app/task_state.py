@@ -26,6 +26,7 @@ class TaskState:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     deadline_at: float = 0.0
     worker_id: str = "app"
+    version: int = 0
 
 
 TASKS: dict[str, TaskState] = {}
@@ -78,6 +79,43 @@ def queued_count() -> int:
     return _QUEUED
 
 
+def sync_record(record: Any) -> None:
+    """Apply a durable terminal record to the single-process API cache.
+
+    Mutates the existing object so its cancel_event and event waiter identity
+    survive. A cached state from a newer DB version is never overwritten.
+    """
+    with _LOCK:
+        state = TASKS.get(record.id)
+        if state is None:
+            return
+        if getattr(state, "version", 0) > record.version:
+            return
+        state.status = record.status.value
+        state.summary = record.summary
+        state.error = record.error
+        state.version = record.version
+
+
+def publish_terminal(state: TaskState, status: str, summary: str,
+                     error: str | None, *, expected_version: int) -> bool:
+    """Publish a local terminal outcome only if the cache has not advanced.
+
+    The periodic reconciler may have already synced a confirmed completed
+    record while the worker was still finishing. In that case the late
+    failure must not overwrite the newer cache state.
+    """
+    with _LOCK:
+        if getattr(state, "version", 0) > expected_version:
+            return False
+        if state.status == "completed" and status != "completed":
+            return False
+        state.status = status
+        state.summary = summary
+        state.error = error
+        return True
+
+
 def _prune_tasks() -> None:
     """Drop old terminal task state so repeated demo runs do not grow forever.
 
@@ -113,6 +151,7 @@ def _owned_task(task_id: str, principal: str) -> TaskState:
                 status=record.status.value,
                 summary=record.summary,
                 error=record.error,
+                version=record.version,
             )
             with _LOCK:
                 TASKS.setdefault(task_id, state)

@@ -215,6 +215,7 @@ def _prepare_run(state: TaskState, *, already_claimed: bool,
                 task_state._DISPATCHED_QUEUED.discard(state.task_id)
             task_state._release_exec_slot()
             return None
+        state.version = started.version
     with task_state._DISPATCH_LOCK:
         task_state._DISPATCHED_QUEUED.discard(state.task_id)
     return RunContext(state=state)
@@ -324,24 +325,47 @@ def _finalize_run(ctx: RunContext) -> None:
             ctx.final_error = ctx.final_error or (
                 f"anchor_seal_failed: {type(exc).__name__}: {exc}"
             )
+    prior_version = state.version
     persisted = settings.TASK_SERVICE.finish(
         state.task_id, TaskStatus(ctx.final_status),
         summary=ctx.final_summary, error=ctx.final_error,
+        worker_id=state.worker_id,
     )
+    authoritative = None
     if settings.TASK_SERVICE.enabled:
         if persisted is None or not persisted.terminal:
-            # Never publish a successful terminal state when the DB write did
-            # not happen; a later recovery can still repair the durable row.
-            ctx.final_status = "failed"
-            ctx.final_error = ctx.final_error or "terminal state was not persisted"
+            # The periodic reconciler may have won the race after this trace
+            # was sealed. Re-read the durable record before publishing a late
+            # failure over a confirmed completed state.
+            try:
+                authoritative = settings.TASK_SERVICE.get_record(state.task_id)
+            except Exception:  # noqa: BLE001
+                authoritative = None
+            if authoritative is not None and authoritative.terminal:
+                persisted = authoritative
+                ctx.final_status = authoritative.status.value
+                ctx.final_error = authoritative.error
+            else:
+                ctx.final_status = "failed"
+                ctx.final_error = ctx.final_error or (
+                    "terminal state was not persisted"
+                )
         elif persisted.status.value != ctx.final_status:
             # Another recovery/transition already owns the durable terminal
             # state; mirror it rather than claiming the local outcome.
             ctx.final_status = persisted.status.value
             ctx.final_error = ctx.final_error or persisted.error
-    state.status = ctx.final_status
-    state.summary = ctx.final_summary
-    state.error = ctx.final_error
+    if authoritative is not None and authoritative.terminal:
+        task_state.sync_record(authoritative)
+    elif persisted is not None and persisted.terminal:
+        task_state.sync_record(persisted)
+    else:
+        # Only publish the local failure if the cache has not advanced under
+        # us (e.g. a concurrent reconciliation to completed).
+        task_state.publish_terminal(
+            state, ctx.final_status, ctx.final_summary, ctx.final_error,
+            expected_version=prior_version,
+        )
     task_state._release_exec_slot()
 
 

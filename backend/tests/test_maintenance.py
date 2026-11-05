@@ -82,8 +82,10 @@ class MaintenanceEvidenceTest(unittest.TestCase):
                 def interrupted_tasks(self):
                     return []
 
-                def list_tasks(self, *, status=None, limit=50):
+                def list_tasks(self, *, status=None, limit=50, offset=0, after_created=None, after_id=None):
                     value = getattr(status, "value", status)
+                    if offset:
+                        return []
                     return [record] if value == "running" else []
 
                 def reconcile_terminal(self, task_id, status, **kwargs):
@@ -140,9 +142,13 @@ class MaintenanceEvidenceTest(unittest.TestCase):
                 def interrupted_tasks(self):
                     return []
 
-                def list_tasks(self, *, status=None, limit=50):
+                def list_tasks(self, *, status=None, limit=50, offset=0, after_created=None, after_id=None):
                     value = getattr(status, "value", status)
-                    return [record] if value == "running" else []
+                    if offset:
+                        return []
+                    if value == "running":
+                        return [record]
+                    return [record] if value == "interrupted" else []
 
                 def reconcile_terminal(self, task_id, status, **kwargs):
                     calls.append((task_id, status))
@@ -174,8 +180,8 @@ class MaintenanceEvidenceTest(unittest.TestCase):
             class Service:
                 enabled = True
 
-                def interrupted_tasks(self):
-                    return [record]
+                def list_tasks(self, *, status=None, limit=50, offset=0, after_created=None, after_id=None):
+                    return [record] if getattr(status, "value", status) == "interrupted" else []
 
                 def reconcile_terminal(self, task_id, status, **kwargs):
                     calls.append((task_id, status, kwargs))
@@ -203,8 +209,8 @@ class MaintenanceEvidenceTest(unittest.TestCase):
             class Service:
                 enabled = True
 
-                def interrupted_tasks(self):
-                    return [record]
+                def list_tasks(self, *, status=None, limit=50, offset=0, after_created=None, after_id=None):
+                    return [record] if getattr(status, "value", status) == "interrupted" else []
 
             with mock.patch.object(settings, "TRACES", traces), \
                     mock.patch.object(settings, "TASK_SERVICE", Service()), \
