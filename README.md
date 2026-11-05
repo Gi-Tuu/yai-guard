@@ -86,8 +86,9 @@ runtime:
 - terminal state is retained for `TASK_RETENTION_DAYS` (default 30, `0` disables);
   scheduled cleanup removes DB rows, approvals, events, traces and anchors;
 - schema migrations are ordered and versioned (`PRAGMA user_version`); v4 adds
-  `updated_at`, durable events, rate hits and SSE leases; migrations are
-  serialized across workers with a file lock.
+  `updated_at`, durable events, rate hits and SSE leases; v5 adds indexes for
+  `rate_hits(ts)` and `sse_leases(created_at)` used by global quota cleanup;
+  migrations are serialized across workers with a file lock.
 
 Approval and task transitions are written through `TaskService`; a SQLite failure is
 surfaced as degraded health instead of breaking task creation.
@@ -110,6 +111,10 @@ surfaced as degraded health instead of breaking task creation.
 | Ed25519 evidence signatures | Anchor `signature_v2` with a pinned public key; v1 HMAC remains supported |
 | Durable task runtime | SQLite task state, bounded queue, cancellation, deadline, restart recovery and orphan reaper |
 | Multi-worker runtime | Optional DB queue + per-process claim workers; global SQLite rate/SSE quotas |
+| Encrypted task text at rest | `TASK_DATA_KEY` encrypts prompt/summary/error with Fernet (`enc:v1:`); legacy plaintext rows remain readable |
+| Authenticated metrics | `GET /metrics` returns Prometheus text only with a valid `X-Demo-Token` |
+| Quiesced backups | `backup_state.py --quiesce` blocks new tasks/claims and waits for active work before a strict snapshot |
+| Key rotation | `scripts/rotate_data_key.py` re-encrypts existing task fields from an old to a new Fernet key |
 | Offline evidence | A downloadable evidence bundle contains the trace and anchor; an independent CLI re-verifies it |
 
 ---
@@ -145,6 +150,34 @@ YAI_BASE_URL=https://... YAI_DEMO_TOKEN=... python scripts/chaos_test.py \
   --tunnel-stop-cmd "ssh app 'systemctl stop yai-tunnel'" \
   --tunnel-start-cmd "ssh app 'systemctl start yai-tunnel'"
 ```
+
+### Operator tools
+
+```bash
+# optional field-level encryption for prompt/summary/error at rest
+export TASK_DATA_KEY="$(python - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+)"
+
+# authenticated metrics (token is never put in argv)
+curl -H "X-Demo-Token: $YAI_DEMO_TOKEN" https://.../metrics
+
+# strict, quiesced backup: blocks new work while active tasks drain
+python scripts/backup_state.py backup --artifacts artifacts --out backups --quiesce
+
+# rotate TASK_DATA_KEY without changing the schema (back up the DB first)
+python scripts/rotate_data_key.py \
+  --db artifacts/tasks.db --old-key-file old.env --new-key-file new.env
+
+# short soak with P50/P95/P99 latency
+YAI_BASE_URL=https://... YAI_DEMO_TOKEN=... \
+  python scripts/soak_test.py --tasks 20 --concurrency 4
+```
+
+Keep the Fernet key outside the repository and outside the backup archive; without
+it, encrypted task text cannot be recovered.
 
 ---
 
