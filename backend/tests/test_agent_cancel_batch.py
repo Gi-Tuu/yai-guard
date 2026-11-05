@@ -76,17 +76,24 @@ class AgentCancelBatchTest(unittest.TestCase):
         self.assertFalse(any(e["event"] == "task.completed" for e in events))
 
     def test_deadline_wins_over_shared_cancel_event(self) -> None:
-        result = run_agent(
-            task="slow model",
-            model=SlowModel(),
-            policy=PolicyEngine.from_file(),
-            sandbox=FakeSandbox(),
-            trace=self.trace,
-            task_id="tk_deadline",
-            approver=lambda d, c: True,
-            task_timeout_s=1,
-            max_steps=2,
-        )
+        cancel_event = threading.Event()
+        timer = threading.Timer(1.0, cancel_event.set)
+        timer.start()
+        try:
+            result = run_agent(
+                task="slow model",
+                model=SlowModel(),
+                policy=PolicyEngine.from_file(),
+                sandbox=FakeSandbox(),
+                trace=self.trace,
+                task_id="tk_deadline",
+                approver=lambda d, c: True,
+                task_timeout_s=1,
+                max_steps=2,
+                should_cancel=cancel_event.is_set,
+            )
+        finally:
+            timer.cancel()
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error, "task_timeout")
         events = self.trace.read()

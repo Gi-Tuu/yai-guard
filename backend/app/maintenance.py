@@ -184,6 +184,34 @@ def _reaper_loop() -> None:
             _log.warning("orphan reaper failed", exc_info=True)
 
 
+def _reconcile_terminal_from_events(record: Any, events: list[dict[str, Any]]) -> bool:
+    terminal_events = [
+        e for e in events
+        if e.get("event") in ("task.completed", "task.failed", "task.cancelled")
+    ]
+    if len(terminal_events) != 1:
+        return False
+    event = terminal_events[0]
+    payload = event.get("payload") or {}
+    target = {
+        "task.completed": TaskStatus.COMPLETED,
+        "task.failed": TaskStatus.FAILED,
+        "task.cancelled": TaskStatus.CANCELLED,
+    }[event["event"]]
+    reconcile_error = payload.get("error") or payload.get("reason")
+    if (event["event"] == "task.completed"
+            and any(e.get("event") == "sandbox.destroy.unverified"
+                    for e in events)):
+        target = TaskStatus.FAILED
+        reconcile_error = "cleanup_unverified"
+    settings.TASK_SERVICE.reconcile_terminal(
+        record.id, target,
+        summary=str(payload.get("summary", "")),
+        error=reconcile_error,
+    )
+    return True
+
+
 def _record_interrupted_events() -> list[str]:
     """Make recovery visible in the trace, idempotently, for every interrupted task."""
     recorded: list[str] = []
@@ -198,31 +226,8 @@ def _record_interrupted_events() -> list[str]:
             events = trace.read()
             if not events:
                 continue
-            terminal_events = [
-                e for e in events
-                if e.get("event") in ("task.completed", "task.failed", "task.cancelled")
-            ]
-            if terminal_events:
-                if len(terminal_events) == 1:
-                    event = terminal_events[0]
-                    payload = event.get("payload") or {}
-                    target = {
-                        "task.completed": TaskStatus.COMPLETED,
-                        "task.failed": TaskStatus.FAILED,
-                        "task.cancelled": TaskStatus.CANCELLED,
-                    }[event["event"]]
-                    reconcile_error = payload.get("error") or payload.get("reason")
-                    if (event["event"] == "task.completed"
-                            and any(e.get("event") == "sandbox.destroy.unverified"
-                                    for e in events)):
-                        target = TaskStatus.FAILED
-                        reconcile_error = "cleanup_unverified"
-                    settings.TASK_SERVICE.reconcile_terminal(
-                        record.id, target,
-                        summary=str(payload.get("summary", "")),
-                        error=reconcile_error,
-                    )
-                    recorded.append(record.id)
+            if _reconcile_terminal_from_events(record, events):
+                recorded.append(record.id)
                 continue
             if any(e.get("event") == "task.interrupted" for e in events):
                 continue
@@ -239,6 +244,28 @@ def _record_interrupted_events() -> list[str]:
             recorded.append(record.id)
         except Exception:  # noqa: BLE001 - one bad trace must not break startup
             continue
+
+    # DB write failure can leave a task running after its trace already reached
+    # a terminal state. Reconcile only when the trace has exactly one terminal
+    # event; the DB update itself is version-CAS protected.
+    for status in (TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL):
+        try:
+            records = settings.TASK_SERVICE.list_tasks(status=status, limit=500)
+        except Exception:  # noqa: BLE001
+            continue
+        for record in records:
+            path = settings.TRACES / f"{record.trace_id}.jsonl"
+            anchor = settings.TRACES / f"{record.trace_id}.anchor.json"
+            if not path.exists() or not anchor.exists():
+                # Do not reconcile a task whose trace has not been sealed yet;
+                # the owner may still be finishing normally.
+                continue
+            try:
+                events = TraceStore(path, record.trace_id).read()
+                if events and _reconcile_terminal_from_events(record, events):
+                    recorded.append(record.id)
+            except Exception:  # noqa: BLE001
+                continue
     return recorded
 
 

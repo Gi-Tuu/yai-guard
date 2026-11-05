@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-05 — v0.1.13 atomic transitions and terminal reconciliation
+
+- `TaskStore.transition` now updates with `id + source status + version` in the WHERE clause, so a stale worker cannot overwrite a recovery/cancel terminal decision.
+- `reconcile_terminal` accepts a sealed running/waiting record and repairs it from a terminal trace with CAS.
+- Maintenance reconciles running/waiting tasks only when the trace anchor exists, avoiding interference with a normal in-flight finalize.
+- Added stale-transition, deadline-vs-cancel, finish-force, admin-flag and running-trace reconciliation regressions.
+- Tests: 263 (7 skipped); coverage 73%.
+
 ## 2026-11-05 — v0.1.12 terminal persistence and admin flags
 
 - `TaskService.finish` force-writes the terminal state after three CAS conflicts instead of returning a still-running record; `_finalize_run` treats a non-terminal result as persistence failure.

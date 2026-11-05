@@ -252,9 +252,10 @@ class TaskStore(QuotaMixin):
             if destination in TERMINAL_STATUSES and finished_at is None:
                 assignments.append("finished_at = ?")
                 values.append(time.time())
-            values.append(task_id)
+            values.extend([task_id, current.status.value, current.version])
             cursor = self._conn.execute(
-                f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
+                f"UPDATE tasks SET {', '.join(assignments)} "
+                "WHERE id = ? AND status = ? AND version = ?",
                 tuple(values),
             )
             if cursor.rowcount != 1:
@@ -408,7 +409,10 @@ class TaskStore(QuotaMixin):
         finished = time.time()
         with self._lock, self._conn:
             current = self._get_locked(task_id)
-            if current is None or current.status is not TaskStatus.INTERRUPTED:
+            if current is None or current.status not in (
+                TaskStatus.INTERRUPTED, TaskStatus.RUNNING,
+                TaskStatus.WAITING_APPROVAL,
+            ):
                 return current
             self._conn.execute(
                 "UPDATE tasks SET status = ?, summary = ?, error = ?, "
@@ -418,7 +422,7 @@ class TaskStore(QuotaMixin):
                 (
                     destination.value, data_protection.protect(summary),
                     data_protection.protect(error), finished, finished, task_id,
-                    TaskStatus.INTERRUPTED.value, current.version,
+                    current.status.value, current.version,
                 ),
             )
             return self._get_locked(task_id)

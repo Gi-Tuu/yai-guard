@@ -206,6 +206,20 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(self.store.get_task("stale").status, TaskStatus.INTERRUPTED)
         self.assertEqual(self.store.get_task("active").status, TaskStatus.RUNNING)
 
+    def test_transition_stale_version_cannot_overwrite(self) -> None:
+        self._create("race")
+        self.store.transition("race", TaskStatus.RUNNING, worker_id="w1")
+        stale = self.store.get_task("race").version
+        other = TaskStore(self.path)
+        try:
+            other.request_cancel("race")
+            self.assertIsNone(self.store.transition(
+                "race", TaskStatus.COMPLETED, expected_version=stale,
+            ))
+        finally:
+            other.close()
+        self.assertEqual(self.store.get_task("race").status, TaskStatus.RUNNING)
+
     def test_recover_expired_does_not_recover_a_renewed_lease(self) -> None:
         self._create("renewed")
         self.store.transition("renewed", TaskStatus.RUNNING, worker_id="w1",

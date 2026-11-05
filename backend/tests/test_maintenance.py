@@ -61,6 +61,38 @@ class MaintenanceEvidenceTest(unittest.TestCase):
             with task_state._DISPATCH_LOCK:
                 task_state._DISPATCHED_QUEUED.clear()
 
+    def test_running_task_with_terminal_trace_is_reconciled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            traces = pathlib.Path(tmp)
+            trace_id = "tr_running"
+            trace = TraceStore(traces / f"{trace_id}.jsonl", trace_id)
+            trace.append(task_id="tk", actor="system", event="task.created", payload={})
+            trace.append(task_id="tk", actor="agent", event="task.completed",
+                         payload={"summary": "done"})
+            trace.seal(traces / f"{trace_id}.anchor.json")
+            record = SimpleNamespace(id="tk", trace_id=trace_id, error=None)
+            calls: list[tuple] = []
+
+            class Service:
+                enabled = True
+
+                def interrupted_tasks(self):
+                    return []
+
+                def list_tasks(self, *, status=None, limit=50):
+                    value = getattr(status, "value", status)
+                    return [record] if value == "running" else []
+
+                def reconcile_terminal(self, task_id, status, **kwargs):
+                    calls.append((task_id, status, kwargs))
+
+            with mock.patch.object(settings, "TRACES", traces), \
+                    mock.patch.object(settings, "TASK_SERVICE", Service()), \
+                    mock.patch.object(settings, "TRACE_ED25519_KEY", None):
+                recorded = maintenance._record_interrupted_events()
+            self.assertEqual(recorded, ["tk"])
+            self.assertEqual(calls[0][1].value, "completed")
+
     def test_cleanup_unverified_is_reconciled_as_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             traces = pathlib.Path(tmp)
