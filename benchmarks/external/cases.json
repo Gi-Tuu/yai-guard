@@ -1,0 +1,312 @@
+{
+  "schema": "yai-guard-external-claim-evidence/v1",
+  "cases": [
+    {
+      "id": "ext-01",
+      "source": "copilot-swe-agent",
+      "agent": "GitHub Copilot coding agent",
+      "source_url": "https://github.com/microsoft/TypeScript/pull/65323",
+      "repository": "microsoft/TypeScript",
+      "pr_number": 65323,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-11-04T19:43:29Z",
+      "merged": true,
+      "task": "Reject unary exponentiation operands hidden by assertions",
+      "claim": "Reject unary exponentiation operands hidden by assertions\n<!--\nThank you for submitting a pull request!\n\nPlease verify that:\n* [ ] There is an associated issue in the `Backlog` milestone (**required**)\n* [ ] Code is up-to-date with the `main` branch\n* [ ] You've successfully run `npx hereby test`\n* [ ] You've successfully run `npx hereby lint`\n* [ ] You've successfully run `npx hereby check:format`\n* [ ] There are new or updated tests validating the change\n\nRefer to CONTRIBUTING.md for more details:\n  https://github.com/Microsoft/TypeScript/blob/main/C",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "b64beb298613f85f4a6264f63057efff7baaf57a",
+        "observed": true,
+        "total": 35,
+        "conclusions": {
+          "success": 34,
+          "neutral": 1
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-02",
+      "source": "copilot-swe-agent",
+      "agent": "GitHub Copilot coding agent",
+      "source_url": "https://github.com/pg94au/Convertster/pull/28",
+      "repository": "pg94au/Convertster",
+      "pr_number": 28,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-10-29T15:45:42Z",
+      "merged": true,
+      "task": "Support JP2 images as conversion sources",
+      "claim": "Support JP2 images as conversion sources\nConvertster should accept JP2 files as source images while keeping JP2 unsupported as an output format. Existing JPG and PNG conversion settings should remain unchanged.\n\n- **Decoding:** Use Magick.NET for `.jp2` inputs, then pass the decoded image to ImageSharp for output encoding.\n  ```csharp\n  using var jp2Image = new MagickImage(filename);\n  using var pngStream = new MemoryStream(jp2Image.ToByteArray(MagickFormat.Png));\n  return await Image.LoadAsync(pngStream, token);\n  ```\n- **Integration:",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "7982c3b6fea00b697c9ee917e867e0ec73fe813e",
+        "observed": true,
+        "total": 2,
+        "conclusions": {
+          "success": 2
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-03",
+      "source": "copilot-swe-agent",
+      "agent": "GitHub Copilot coding agent",
+      "source_url": "https://github.com/matterbridge/matrixclient/pull/18",
+      "repository": "matterbridge/matrixclient",
+      "pr_number": 18,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-11-04T22:23:37Z",
+      "merged": true,
+      "task": "Self-heal room names that still show only an ID, consistent with matterclient#148",
+      "claim": "Self-heal room names that still show only an ID, consistent with matterclient#148\nRooms whose `m.room.name` / `m.room.canonical_alias` state was not seen (for example after a slow or failed sync) were listed by their room ID. This mirrors the self-healing merged in matterbridge/matterclient#148 for Mattermost channels.\n\n## Changes\n- **Self-healing lookup:** `Rooms()`, `ResolveRoomName` and the sync start, at most once per room, a goroutine that refetches the name and canonical alias of a non-DM room that has neither.\n  - Exponential backoff from 5s up to 5m, max 12 attempts,",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "b3a29312175554d1f2e6e4662226e4cba9dc6f0c",
+        "observed": true,
+        "total": 1,
+        "conclusions": {
+          "success": 1
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-04",
+      "source": "copilot-swe-agent",
+      "agent": "GitHub Copilot coding agent",
+      "source_url": "https://github.com/lesis-lat/lesis-lat.github.io/pull/48",
+      "repository": "lesis-lat/lesis-lat.github.io",
+      "pr_number": 48,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-11-04T19:38:28Z",
+      "merged": true,
+      "task": "Handle HTTP 403 in blog sync without failing the scheduled `sync` job",
+      "claim": "Handle HTTP 403 in blog sync without failing the scheduled `sync` job\nThe `sync` workflow was failing whenever `https://blog.lesis.lat/feed.xml` returned HTTP 403, causing the scheduled blog sync job to exit non-zero even when existing data should be retained. This change makes 403 a non-fatal skip while preserving failure behavior for other HTTP errors.\n\n- **Root-cause behavior adjusted**\n  - `script/sync_blog.rb` now treats `Net::HTTPForbidden` as a skip condition instead of an exception path.\n  - Other non-success HTTP statuses still raise `BlogSync::Error` and",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "0f7442bb455bb9edece4e9d2e4836aea7f64b57f",
+        "observed": true,
+        "total": 1,
+        "conclusions": {
+          "failure": 1
+        },
+        "failing": [
+          "build"
+        ]
+      },
+      "should_accept": false
+    },
+    {
+      "id": "ext-05",
+      "source": "copilot-swe-agent",
+      "agent": "GitHub Copilot coding agent",
+      "source_url": "https://github.com/DanAakesen/jarvis/pull/1590",
+      "repository": "DanAakesen/jarvis",
+      "pr_number": 1590,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-11-05T00:54:38Z",
+      "merged": true,
+      "task": "P15-87: Temporarily skip the widgets extension in the archive",
+      "claim": "P15-87: Temporarily skip the widgets extension in the archive\nTestFlight build 69 failed at the archive step. The `.widgets` App ID has no provisioning profile with the App Groups capability, so signing rejects the widgets entitlements. This PR takes the widgets extension out of the archive so the other work can ship. The owner still has to add the capability in the Apple developer portal. Refs DanAakesen/jarvis#1589\n\n- **`apps/ios/project.yml`**\n  - Removes the `JarvisWidgets` embed from the Jarvis app dependencies and adds a comment pointing to #1589.",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "6b9e5c84ffbfc9176f8b3bc9acd6aec1c8a97fec",
+        "observed": true,
+        "total": 44,
+        "conclusions": {
+          "cancelled": 4,
+          "success": 24,
+          "skipped": 14,
+          "failure": 2
+        },
+        "failing": [
+          "sync",
+          "label",
+          "sync",
+          "label",
+          "title",
+          "title"
+        ]
+      },
+      "should_accept": false
+    },
+    {
+      "id": "ext-06",
+      "source": "copilot-swe-agent",
+      "agent": "GitHub Copilot coding agent",
+      "source_url": "https://github.com/ko-build/ko/pull/1698",
+      "repository": "ko-build/ko",
+      "pr_number": 1698,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-07-06T15:50:59Z",
+      "merged": false,
+      "task": "Allow `kodata` symlinks within the repository root",
+      "claim": "Allow `kodata` symlinks within the repository root\nThe `kodata` symlink hardening was too narrow: it rejected symlinks to files that are part of the same repository but live outside the package’s `kodata/` directory, which breaks common layouts like shared `LICENSE` and repo-level config. This change keeps the exfiltration guard, but moves the trust boundary to the repository root when that boundary is knowable.\n\n- **Problem**\n  - `kodata/` symlinks were only allowed to resolve within `kodata/` itself.\n  - That blocked legitimate in-repo targets",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "f92caabf2bc9e1e9e1f21c5c5eb71dbe4d5c989c",
+        "observed": true,
+        "total": 19,
+        "conclusions": {
+          "success": 19
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-07",
+      "source": "openhands-agent",
+      "agent": "OpenHands agent",
+      "source_url": "https://github.com/OpenHands/automation/pull/670",
+      "repository": "OpenHands/automation",
+      "pr_number": 670,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-11-02T14:18:03Z",
+      "merged": true,
+      "task": "fix(deps): bump authlib, pyasn1 and dnspython",
+      "claim": "fix(deps): bump authlib, pyasn1 and dnspython\nOpened by an automated OpenHands agent.\n\nRisk: 3/10 — lockfile-only minor/patch bumps of transitive dependencies; authlib moves two minor versions.\n\nUpgrades 3 dependencies to fix 9 vulnerabilities (1 critical)\n\n## Evidence\n1. The 2026-11-02 scan of the `main` build of `ghcr.io/openhands/automation` found 3 packages with known CRITICAL or HIGH vulnerabilities that already have a released fix.\n2. Each upgrade below stays within the package's current major version.\n3. This PR changes `uv.lock` so",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "f772576fc0543578ba811160c456dfa240a193dd",
+        "observed": true,
+        "total": 12,
+        "conclusions": {
+          "skipped": 2,
+          "success": 10
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-08",
+      "source": "openhands-agent",
+      "agent": "OpenHands agent",
+      "source_url": "https://github.com/OpenHands/enterprise/pull/1078",
+      "repository": "OpenHands/enterprise",
+      "pr_number": 1078,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-10-29T13:17:49Z",
+      "merged": true,
+      "task": "fix(deps): bump authlib and pypdf",
+      "claim": "fix(deps): bump authlib and pypdf\nOpened by an automated OpenHands agent.\n\nRisk: 3/10 — two pinned version bumps within the same major version, lockfile changes only those two packages; authlib moves 3 minor versions.\n\nUpgrades 2 dependencies to fix 6 vulnerabilities (1 critical)\n\n## Evidence\n1. The 2026-10-28 scan of the `main` build of `ghcr.io/openhands/enterprise-server` found 2 packages with known CRITICAL or HIGH vulnerabilities that already have a released fix.\n2. Each upgrade below stays within the package's current majo",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "06bee8d65e18a27383a73f3ffd0d43aac0893cbe",
+        "observed": true,
+        "total": 28,
+        "conclusions": {
+          "skipped": 8,
+          "success": 20
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-09",
+      "source": "openhands-agent",
+      "agent": "OpenHands agent",
+      "source_url": "https://github.com/OpenHands/OpenHands-Cloud/pull/1495",
+      "repository": "OpenHands/OpenHands-Cloud",
+      "pr_number": 1495,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-10-27T13:33:59Z",
+      "merged": true,
+      "task": "fix(e2e): show the page text when the home screen does not appear after login",
+      "claim": "fix(e2e): show the page text when the home screen does not appear after login\nOpened by an automated OpenHands agent.\n\nRisk: 1/10 — This changes only the error message of a failing login check. A passing run behaves the same.\n\n## Description\n\n**Problem:** The beta E2E run fails every day while it logs in a brand-new test user. The error only says \"home screen not found\", so nobody can see the real reason without downloading a snapshot file.\n\n**Change:** `completeLoginAndOnboard` in `e2e_tests/utils/auth-helpers.ts` still waits for the home screen. If the home screen does",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "507f64d8d15df982520246dc5887885f0a81e438",
+        "observed": true,
+        "total": 25,
+        "conclusions": {
+          "skipped": 9,
+          "success": 16
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-10",
+      "source": "openhands-agent",
+      "agent": "OpenHands agent",
+      "source_url": "https://github.com/OpenHands/OpenHands-Cloud/pull/1498",
+      "repository": "OpenHands/OpenHands-Cloud",
+      "pr_number": 1498,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-10-28T13:33:41Z",
+      "merged": true,
+      "task": "fix(e2e): list the login options when the GitHub login option is missing",
+      "claim": "fix(e2e): list the login options when the GitHub login option is missing\nOpened by an automated OpenHands agent.\n\nRisk: 1/10 — the change only rewrites the error message when the login click already fails; the click, its timeout and every assertion stay the same.\n\n## Problem\n\nEvery beta E2E test is blocked at login because the beta login page shows no \"Log in with GitHub\" option, and the test error only reports a click timeout, so the report does not say that the option is missing.\n\n## Evidence\n\n1. The E2E suite runs against the beta instance once a day. ReportPortal",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "49e4cf64deb983789c7b3045dc02b5477c506ad5",
+        "observed": true,
+        "total": 25,
+        "conclusions": {
+          "skipped": 9,
+          "success": 16
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-11",
+      "source": "openhands-agent",
+      "agent": "OpenHands agent",
+      "source_url": "https://github.com/OpenHands/automation/pull/648",
+      "repository": "OpenHands/automation",
+      "pr_number": 648,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-10-26T01:09:10Z",
+      "merged": true,
+      "task": "fix(deps): bump aiohttp and fsspec",
+      "claim": "fix(deps): bump aiohttp and fsspec\nOpened by an automated OpenHands agent.\n\nRisk: 2/10 — lockfile-only patch and minor bumps; aiohttp 3.14.4 needs yarl 1.25.1, so yarl moves with it.\n\nThe automation image ships aiohttp and fsspec versions with 4 known high-severity vulnerabilities.\n\n## Evidence\n1. The 2026-10-23 scan of the `main` build of `automation` found 2 packages with known CRITICAL or HIGH vulnerabilities that already have a released fix.\n2. Each upgrade below stays within the package's current major version.\n3. This PR ch",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "ffa3265af014b5f72974c8074ca98ef1371fdf7c",
+        "observed": true,
+        "total": 12,
+        "conclusions": {
+          "skipped": 2,
+          "success": 10
+        },
+        "failing": []
+      },
+      "should_accept": true
+    },
+    {
+      "id": "ext-12",
+      "source": "openhands-agent",
+      "agent": "OpenHands agent",
+      "source_url": "https://github.com/OpenHands/enterprise/pull/1019",
+      "repository": "OpenHands/enterprise",
+      "pr_number": 1019,
+      "collected_at": "2026-11-05",
+      "created_at": "2026-10-26T00:43:36Z",
+      "merged": true,
+      "task": "fix(deps): bump aiohttp from 3.14.3 to 3.14.4",
+      "claim": "fix(deps): bump aiohttp from 3.14.3 to 3.14.4\nOpened by an automated OpenHands agent.\n\nRisk: 2/10 — patch bump of a pinned dependency; the lockfile also moves yarl from 1.23.0 to 1.25.1 because aiohttp 3.14.4 requires it.\n\nThe enterprise-server image ships an aiohttp version with 3 known high-severity vulnerabilities.\n\n## Evidence\n1. The 2026-10-23 scan of `ghcr.io/openhands/enterprise-server:main` found aiohttp 3.14.3, with 0 CRITICAL and 3 HIGH vulnerabilities.\n2. aiohttp 3.14.4 is the first release that fixes them.\n3. aiohttp reaches thi",
+      "evidence": {
+        "kind": "github_check_runs",
+        "head_sha": "05c5c8684c196515578c8f37cb483f894ba3ba68",
+        "observed": true,
+        "total": 24,
+        "conclusions": {
+          "skipped": 8,
+          "success": 16
+        },
+        "failing": []
+      },
+      "should_accept": true
+    }
+  ]
+}
